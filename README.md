@@ -59,6 +59,32 @@ python -m playwright install chromium
 
 ## 使用说明
 
+### 一键流水线（推荐）
+
+项目已提供统一流水线入口，会自动执行：爬取 -> 分析 -> 前端导出。
+
+```powershell
+# 方式 1：直接调用 Python 入口（全流程）
+python src/run_data_pipeline.py
+
+# 方式 2：使用 PowerShell 包装脚本（全流程）
+./run_pipeline.ps1
+```
+
+常用模式：
+
+```powershell
+# 只刷新分析 + 前端（不重跑爬虫，速度快）
+python src/run_data_pipeline.py --skip-crawlers
+
+# 仅跑指定站点（示例：米哈游）再联动分析和前端导出
+python src/run_data_pipeline.py --only mihoyo
+
+# 包装脚本同样支持参数
+./run_pipeline.ps1 -SkipCrawlers
+./run_pipeline.ps1 -Only mihoyo
+```
+
 ### 分析模块（ipynb + 可复用接口）
 
 项目新增招聘数据分析接口：`src/analysis_api.py`。Notebook 与后续前端服务都应复用这层接口，避免重复实现。
@@ -66,6 +92,10 @@ python -m playwright install chromium
 分析 Notebook：`notebooks/jobs_analysis.ipynb`
 
 分析文档（含求职规划解读）：`docs/JOB_MARKET_ANALYSIS.md`
+
+项目协作规范：`CLAUDE.md`
+
+迭代路线图：`docs/ROADMAP.md`
 
 ### 招聘信息前端集成站（卡片筛选）
 
@@ -292,6 +322,39 @@ python src/antgroup_campus_scraper.py --jsonl data/antgroup_jobs.jsonl --csv dat
 | `--page-delay-max` | 0.6 | 页间最大延迟秒数 |
 | `--jsonl` | data/antgroup_jobs.jsonl | JSONL 输出路径 |
 | `--csv` | data/antgroup_jobs.csv | CSV 输出路径 |
+
+## 新增站点扩展流程
+
+为降低新增站点时的改造成本，项目已提供两项扩展能力：
+
+1. 爬虫 Skill（给人工维护）
+- 文件：`skills/recruitment_site_crawler_skill.md`
+- 用途：规范站点侦察、字段映射、稳定性策略、验收清单。
+
+2. 自动化流程编排（给脚本执行）
+- 命令：
+
+```powershell
+python src/run_data_pipeline.py
+```
+
+- 行为：
+	- 自动发现并执行 `src/*_campus_scraper.py`
+	- 自动执行分析导出 `src/run_analysis.py`
+	- 自动执行前端导出 `src/export_frontend_jobs.py`
+
+- 常用参数：
+
+```powershell
+# 只跑指定站点 + 后续分析/前端导出
+python src/run_data_pipeline.py --only tencent mihoyo
+
+# 仅重建分析与前端数据（跳过爬虫）
+python src/run_data_pipeline.py --skip-crawlers
+
+# 仅查看将执行的命令，不实际运行
+python src/run_data_pipeline.py --dry-run
+```
 
 ## 输出字段说明
 

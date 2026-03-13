@@ -13,25 +13,16 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.decomposition import NMF, TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
+from pipeline_utils import discover_job_csv_files
 
 try:
 	import jieba
 except Exception:
 	jieba = None
 
-CSV_SUFFIX = "_jobs.csv"
-SAMPLE_SUFFIX = "_sample.csv"
-
-
 def discover_data_files(data_dir: str | Path) -> list[Path]:
 	"""Find all full job CSV files under data directory."""
-	root = Path(data_dir)
-	files = []
-	for path in sorted(root.glob(f"*{CSV_SUFFIX}")):
-		if path.name.endswith(SAMPLE_SUFFIX):
-			continue
-		files.append(path)
-	return files
+	return discover_job_csv_files(data_dir)
 
 
 def _split_pipe(value: str) -> list[str]:

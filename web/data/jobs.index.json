@@ -1,11 +1,12 @@
 {
   "meta": {
-    "generated_at": "2026-03-13T08:29:10.218202+00:00",
-    "total_jobs": 3613,
+    "generated_at": "2026-03-13T13:37:49.311724+00:00",
+    "total_jobs": 3872,
     "source_files": [
       "antgroup_jobs.csv",
       "bytedance_jobs.csv",
       "kurogame_jobs.csv",
+      "mihoyo_jobs.csv",
       "netease_jobs.csv",
       "tencent_jobs.csv"
     ],
@@ -63,7 +64,7 @@
     },
     {
       "file": "chunks/jobs-008.json",
-      "count": 113
+      "count": 372
     }
   ]
 }

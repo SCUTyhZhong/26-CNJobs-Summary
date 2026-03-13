@@ -7,18 +7,13 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-DATA_SUFFIX = "_jobs.csv"
-SKIP_SUFFIX = "_sample.csv"
+from pipeline_utils import discover_job_csv_files
+
 CHUNK_SIZE = 500
 
 
 def discover_csv_files(data_dir: Path) -> list[Path]:
-    files = []
-    for path in sorted(data_dir.glob(f"*{DATA_SUFFIX}")):
-        if path.name.endswith(SKIP_SUFFIX):
-            continue
-        files.append(path)
-    return files
+    return discover_job_csv_files(data_dir)
 
 
 def split_pipe(value: str) -> list[str]:

@@ -7,12 +7,8 @@ const CHUNK_FETCH_RETRIES = 1;
 const LOADING_REFRESH_INTERVAL = 2;
 const INVITE_STORAGE_KEY = "job-nav-invite-ok";
 const DEFAULT_INVITE_CODES = ["AYOHI2026"];
-
-const INVITE_CODES = (Array.isArray(window.__INVITE_CODES__) && window.__INVITE_CODES__.length
-  ? window.__INVITE_CODES__
-  : DEFAULT_INVITE_CODES)
-  .map(code => toText(code).trim().toLowerCase())
-  .filter(Boolean);
+const DATA_BASE_CANDIDATES = ["data", "./data", "/data", "web/data", "./web/data", "/web/data"];
+const FETCH_TIMEOUT_MS = 25000;
 
 function toText(value) {
   if (typeof value === "string") return value;
@@ -21,6 +17,12 @@ function toText(value) {
   return String(value);
 }
 
+const INVITE_CODES = (Array.isArray(window.__INVITE_CODES__) && window.__INVITE_CODES__.length
+  ? window.__INVITE_CODES__
+  : DEFAULT_INVITE_CODES)
+  .map(code => toText(code).trim().toLowerCase())
+  .filter(Boolean);
+
 const state = {
   jobs: [],
   filtered: [],
@@ -28,6 +30,7 @@ const state = {
   commonKeywords: FALLBACK_KEYWORDS,
   currentView: "list",
   analyticsDirty: true,
+  dataBaseUrl: "",
   chunks: [],
   chunkProgress: {
     loaded: 0,
@@ -106,12 +109,99 @@ function setLoadState(text) {
   }
 }
 
-function buildDataUrl(relativePath) {
-  return new URL(`data/${relativePath}`, window.location.href).toString();
-}
-
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function uniqueArray(items) {
+  return [...new Set(items)];
+}
+
+function scriptDerivedDataBaseUrl() {
+  const script = document.querySelector('script[src*="assets/app.js"]');
+  const src = script?.getAttribute("src") || "";
+  if (!src) return "";
+
+  try {
+    const full = new URL(src, window.location.href);
+    return new URL("../data/", full).toString();
+  } catch (_err) {
+    return "";
+  }
+}
+
+function candidateBaseUrls() {
+  const scriptBase = scriptDerivedDataBaseUrl();
+  const candidates = DATA_BASE_CANDIDATES.map(base => new URL(`${base}/`, window.location.href).toString());
+  if (scriptBase) {
+    candidates.unshift(scriptBase);
+  }
+  if (state.dataBaseUrl) {
+    candidates.unshift(state.dataBaseUrl);
+  }
+  return uniqueArray(candidates);
+}
+
+function buildDataUrl(relativePath, baseUrl = state.dataBaseUrl) {
+  const base = baseUrl || new URL("data/", window.location.href).toString();
+  return new URL(relativePath, base).toString();
+}
+
+async function fetchJsonFromUrl(url, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { signal: controller.signal });
+    if (!resp.ok) {
+      throw new Error(`${url} => ${resp.status}`);
+    }
+    return await resp.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchJsonWithFallback(relativePath, preferredBase = "") {
+  let lastErr = null;
+  const bases = preferredBase
+    ? uniqueArray([preferredBase, ...candidateBaseUrls()])
+    : candidateBaseUrls();
+
+  for (const baseUrl of bases) {
+    const url = buildDataUrl(relativePath, baseUrl);
+    try {
+      const payload = await fetchJsonFromUrl(url);
+      state.dataBaseUrl = baseUrl;
+      return payload;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error(`Failed to load ${relativePath}`);
+}
+
+async function resolveDataBaseAndBootstrap() {
+  const bases = candidateBaseUrls();
+  let lastErr = null;
+
+  for (const baseUrl of bases) {
+    try {
+      const indexPayload = await fetchJsonFromUrl(buildDataUrl("jobs.index.json", baseUrl), 15000);
+      state.dataBaseUrl = baseUrl;
+      return { baseUrl, indexPayload, jobsPayload: null };
+    } catch (indexErr) {
+      try {
+        const jobsPayload = await fetchJsonFromUrl(buildDataUrl("jobs.json", baseUrl), 25000);
+        state.dataBaseUrl = baseUrl;
+        return { baseUrl, indexPayload: null, jobsPayload };
+      } catch (jobsErr) {
+        lastErr = jobsErr || indexErr;
+      }
+    }
+  }
+
+  throw lastErr || new Error("No usable data base path found");
 }
 
 function detectChunkConcurrency() {
@@ -137,20 +227,18 @@ function queueIdle(task) {
 }
 
 function preprocessJobs(jobs) {
-  return jobs.map(job => {
-    return {
-      ...job,
-      company: toText(job.company),
-      recruit_type: toText(job.recruit_type),
-      job_category: toText(job.job_category),
-      work_city: toText(job.work_city),
-      title: toText(job.title),
-      responsibilities: toText(job.responsibilities),
-      requirements: toText(job.requirements),
-      bonus_points: toText(job.bonus_points),
-      detail_url: toText(job.detail_url)
-    };
-  });
+  return jobs.map(job => ({
+    ...job,
+    company: toText(job.company),
+    recruit_type: toText(job.recruit_type),
+    job_category: toText(job.job_category),
+    work_city: toText(job.work_city),
+    title: toText(job.title),
+    responsibilities: toText(job.responsibilities),
+    requirements: toText(job.requirements),
+    bonus_points: toText(job.bonus_points),
+    detail_url: toText(job.detail_url)
+  }));
 }
 
 function titleLower(job) {
@@ -168,9 +256,10 @@ function textBlobLower(job) {
 }
 
 function populateSelect(selectEl, values, selectedValue = "") {
+  if (!selectEl) return "";
   const first = selectEl.options[0];
   selectEl.innerHTML = "";
-  selectEl.appendChild(first);
+  if (first) selectEl.appendChild(first);
 
   values.forEach(v => {
     const opt = document.createElement("option");
@@ -227,6 +316,7 @@ function syncFilterOptions() {
 }
 
 function renderKeywordChips(keywords) {
+  if (!els.keywordChips) return;
   els.keywordChips.innerHTML = "";
   keywords.forEach(word => {
     const btn = document.createElement("button");
@@ -234,7 +324,9 @@ function renderKeywordChips(keywords) {
     btn.type = "button";
     btn.textContent = word;
     btn.addEventListener("click", () => {
-      els.keywordSearch.value = word;
+      if (els.keywordSearch) {
+        els.keywordSearch.value = word;
+      }
       state.filters.keyword = word;
       applyFilters();
     });
@@ -247,12 +339,17 @@ function cardTags(job) {
 }
 
 function renderCards() {
+  if (!els.results || !els.cardTpl || !els.emptyState || !els.loadMore) return;
+
   const toShow = state.filtered.slice(0, state.visibleCount);
   const fragment = document.createDocumentFragment();
   els.results.innerHTML = "";
-  toShow.forEach(job => {
-    const node = els.cardTpl.content.firstElementChild.cloneNode(true);
 
+  toShow.forEach(job => {
+    const root = els.cardTpl.content.firstElementChild;
+    if (!root) return;
+
+    const node = root.cloneNode(true);
     node.querySelector(".job-title").textContent = job.title || "未命名岗位";
     node.querySelector(".meta-row").textContent = `${job.company || "未知公司"} | ${job.recruit_type || "未知项目"} | ${job.work_city || "未知城市"}`;
 
@@ -279,10 +376,8 @@ function renderCards() {
   });
 
   els.results.appendChild(fragment);
-
   els.emptyState.classList.toggle("hidden", state.filtered.length > 0);
-  els.statFiltered.textContent = String(state.filtered.length);
-  els.statShown.textContent = String(toShow.length);
+  updateResultCounters();
 
   const canLoadMore = state.filtered.length > state.visibleCount;
   els.loadMore.classList.toggle("hidden", !canLoadMore);
@@ -320,11 +415,13 @@ function keywordHits(rows, keywords, limit = 6) {
 }
 
 function renderBarList(el, items) {
+  if (!el) return;
   el.innerHTML = "";
   if (!items.length) {
     el.innerHTML = "<p class='bar-label'>No data</p>";
     return;
   }
+
   const max = items[0].count || 1;
   const fragment = document.createDocumentFragment();
   items.forEach(item => {
@@ -343,6 +440,8 @@ function renderBarList(el, items) {
 
 function updateAnalytics() {
   const rows = state.filtered;
+  if (!els.metricJobs) return;
+
   els.metricJobs.textContent = String(rows.length);
   els.metricCompanies.textContent = String(new Set(rows.map(r => r.company).filter(Boolean)).size);
   els.metricProjects.textContent = String(new Set(rows.map(r => r.recruit_type).filter(Boolean)).size);
@@ -366,20 +465,25 @@ function renderStatsIfNeeded(force = false) {
 }
 
 function updateResultCounters() {
-  els.statFiltered.textContent = String(state.filtered.length);
-  els.statShown.textContent = String(Math.min(state.filtered.length, state.visibleCount));
+  if (els.statFiltered) {
+    els.statFiltered.textContent = String(state.filtered.length);
+  }
+  if (els.statShown) {
+    els.statShown.textContent = String(Math.min(state.filtered.length, state.visibleCount));
+  }
 }
 
 function applyFilters() {
   syncFilterOptions();
   state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
-
   state.visibleCount = PAGE_SIZE;
+
   if (state.currentView === "list") {
     renderCards();
   } else {
     updateResultCounters();
   }
+
   state.analyticsDirty = true;
   renderStatsIfNeeded();
 }
@@ -387,11 +491,13 @@ function applyFilters() {
 function refreshFromCurrentData() {
   syncFilterOptions();
   state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
+
   if (state.currentView === "list") {
     renderCards();
   } else {
     updateResultCounters();
   }
+
   state.analyticsDirty = true;
   renderStatsIfNeeded();
 }
@@ -408,11 +514,7 @@ function refreshDuringLoading(force = false) {
 }
 
 async function loadChunkFile(filePath) {
-  const resp = await fetch(buildDataUrl(filePath));
-  if (!resp.ok) {
-    throw new Error(`Chunk load failed: ${filePath}`);
-  }
-  const payload = await resp.json();
+  const payload = await fetchJsonWithFallback(filePath, state.dataBaseUrl);
   const jobs = preprocessJobs(payload.jobs || []);
   state.jobs.push(...jobs);
   state.chunkProgress.loaded += 1;
@@ -443,6 +545,23 @@ function renderMeta(meta) {
   }
 }
 
+async function loadWholeDataFallback() {
+  const payload = await fetchJsonWithFallback("jobs.json", state.dataBaseUrl);
+  state.jobs = preprocessJobs(payload.jobs || []);
+
+  const commonKeywords = payload.meta?.common_keywords?.length
+    ? payload.meta.common_keywords
+    : FALLBACK_KEYWORDS;
+
+  state.commonKeywords = commonKeywords;
+  if (els.statTotal) {
+    els.statTotal.textContent = String(payload.meta?.total_jobs || state.jobs.length);
+  }
+  renderMeta(payload.meta || {});
+  renderKeywordChips(commonKeywords);
+  refreshFromCurrentData();
+}
+
 async function progressiveLoadChunks() {
   if (!state.chunks.length) {
     setLoadState("无数据分片");
@@ -471,7 +590,7 @@ async function progressiveLoadChunks() {
 
         setLoadState(`加载中 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
         refreshDuringLoading();
-        await new Promise(resolve => setTimeout(resolve, 0));
+        await sleep(0);
       }
     }
 
@@ -484,8 +603,13 @@ async function progressiveLoadChunks() {
   if (restBatch.length > 0) {
     setLoadState(`首屏已就绪，后台继续加载 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
     await sleep(20);
-    const bgConcurrency = Math.max(1, detectChunkConcurrency() - 1);
-    await processQueue(restBatch, bgConcurrency);
+    await processQueue(restBatch, Math.max(1, detectChunkConcurrency() - 1));
+  }
+
+  if (state.jobs.length === 0 || failed >= state.chunkProgress.total) {
+    await loadWholeDataFallback();
+    setLoadState(`完成(分片失败，已切整包 ${state.jobs.length} 条)`);
+    return;
   }
 
   if (failed > 0) {
@@ -502,6 +626,10 @@ async function progressiveLoadChunks() {
 
 function switchView(view) {
   state.currentView = view;
+
+  if (!els.listView || !els.statsView || !els.listViewBtn || !els.statsViewBtn) {
+    return;
+  }
 
   const isList = view === "list";
   els.listView.classList.toggle("hidden", !isList);
@@ -533,12 +661,10 @@ function bindInviteGate() {
     };
 
     const gateEl = els.inviteGate || document.getElementById("inviteGate");
-    const appShellEl = els.appShell || document.getElementById("appShell") || document.querySelector(".shell");
 
     const openApp = () => {
       try {
         if (gateEl) gateEl.classList.add("hidden");
-        if (appShellEl) appShellEl.classList.remove("hidden");
         sessionStorage.setItem(INVITE_STORAGE_KEY, "1");
       } finally {
         finish();
@@ -558,7 +684,7 @@ function bindInviteGate() {
     if (!els.inviteCodeInput || !els.inviteSubmit) {
       openApp();
       return;
-    };
+    }
 
     if (sessionStorage.getItem(INVITE_STORAGE_KEY) === "1") {
       openApp();
@@ -571,7 +697,7 @@ function bindInviteGate() {
         showInviteSuccess();
         els.inviteCodeInput.disabled = true;
         els.inviteSubmit.disabled = true;
-        setTimeout(openApp, 450);
+        setTimeout(openApp, 320);
         return;
       }
       showInviteError();
@@ -585,6 +711,7 @@ function bindInviteGate() {
 }
 
 function bindViewSwitch() {
+  if (!els.listViewBtn || !els.statsViewBtn) return;
   els.listViewBtn.addEventListener("click", () => switchView("list"));
   els.statsViewBtn.addEventListener("click", () => switchView("stats"));
 }
@@ -592,75 +719,109 @@ function bindViewSwitch() {
 function bindEvents() {
   bindViewSwitch();
 
-  els.companyFilter.addEventListener("change", e => {
-    state.filters.company = e.target.value;
-    applyFilters();
-  });
+  if (els.companyFilter) {
+    els.companyFilter.addEventListener("change", e => {
+      state.filters.company = e.target.value;
+      applyFilters();
+    });
+  }
 
-  els.projectFilter.addEventListener("change", e => {
-    state.filters.project = e.target.value;
-    applyFilters();
-  });
+  if (els.projectFilter) {
+    els.projectFilter.addEventListener("change", e => {
+      state.filters.project = e.target.value;
+      applyFilters();
+    });
+  }
 
-  els.categoryFilter.addEventListener("change", e => {
-    state.filters.category = e.target.value;
-    applyFilters();
-  });
+  if (els.categoryFilter) {
+    els.categoryFilter.addEventListener("change", e => {
+      state.filters.category = e.target.value;
+      applyFilters();
+    });
+  }
 
-  els.cityFilter.addEventListener("change", e => {
-    state.filters.city = e.target.value;
-    applyFilters();
-  });
+  if (els.cityFilter) {
+    els.cityFilter.addEventListener("change", e => {
+      state.filters.city = e.target.value;
+      applyFilters();
+    });
+  }
 
   const debouncedApply = debounce(() => applyFilters(), 120);
 
-  els.titleSearch.addEventListener("input", e => {
-    state.filters.title = e.target.value.trim();
-    debouncedApply();
-  });
+  if (els.titleSearch) {
+    els.titleSearch.addEventListener("input", e => {
+      state.filters.title = e.target.value.trim();
+      debouncedApply();
+    });
+  }
 
-  els.keywordSearch.addEventListener("input", e => {
-    state.filters.keyword = e.target.value.trim();
-    debouncedApply();
-  });
+  if (els.keywordSearch) {
+    els.keywordSearch.addEventListener("input", e => {
+      state.filters.keyword = e.target.value.trim();
+      debouncedApply();
+    });
+  }
 
-  els.resetFilters.addEventListener("click", () => {
-    state.filters = {
-      company: "",
-      project: "",
-      category: "",
-      city: "",
-      title: "",
-      keyword: ""
-    };
+  if (els.resetFilters) {
+    els.resetFilters.addEventListener("click", () => {
+      state.filters = {
+        company: "",
+        project: "",
+        category: "",
+        city: "",
+        title: "",
+        keyword: ""
+      };
 
-    els.companyFilter.value = "";
-    els.projectFilter.value = "";
-    els.categoryFilter.value = "";
-    els.cityFilter.value = "";
-    els.titleSearch.value = "";
-    els.keywordSearch.value = "";
-    applyFilters();
-  });
+      if (els.companyFilter) els.companyFilter.value = "";
+      if (els.projectFilter) els.projectFilter.value = "";
+      if (els.categoryFilter) els.categoryFilter.value = "";
+      if (els.cityFilter) els.cityFilter.value = "";
+      if (els.titleSearch) els.titleSearch.value = "";
+      if (els.keywordSearch) els.keywordSearch.value = "";
+      applyFilters();
+    });
+  }
 
-  els.loadMore.addEventListener("click", () => {
-    state.visibleCount += PAGE_SIZE;
-    renderCards();
-  });
+  if (els.loadMore) {
+    els.loadMore.addEventListener("click", () => {
+      state.visibleCount += PAGE_SIZE;
+      renderCards();
+    });
+  }
+}
+
+async function initWithJobsPayload(payload) {
+  state.jobs = preprocessJobs(payload.jobs || []);
+  state.filtered = [...state.jobs];
+
+  const commonKeywords = payload.meta?.common_keywords?.length
+    ? payload.meta.common_keywords
+    : FALLBACK_KEYWORDS;
+
+  state.commonKeywords = commonKeywords;
+  if (els.statTotal) {
+    els.statTotal.textContent = String(payload.meta?.total_jobs || state.jobs.length);
+  }
+
+  renderMeta(payload.meta || {});
+  renderKeywordChips(commonKeywords);
+  bindEvents();
+  switchView("list");
+  refreshFromCurrentData();
+  setLoadState("完成(兼容模式)");
 }
 
 async function init() {
   await bindInviteGate();
 
   try {
-    setLoadState("读取索引");
-    let payload;
-    try {
-      const indexResp = await fetch(buildDataUrl("jobs.index.json"));
-      if (!indexResp.ok) {
-        throw new Error("missing jobs.index.json");
-      }
-      payload = await indexResp.json();
+    setLoadState("定位数据目录");
+    const bootstrap = await resolveDataBaseAndBootstrap();
+
+    if (bootstrap.indexPayload) {
+      const payload = bootstrap.indexPayload;
       state.chunks = payload.chunks || [];
       state.chunkProgress.total = state.chunks.length;
       renderMeta(payload.meta || {});
@@ -668,36 +829,33 @@ async function init() {
       const commonKeywords = payload.meta?.common_keywords?.length
         ? payload.meta.common_keywords
         : FALLBACK_KEYWORDS;
-      state.commonKeywords = commonKeywords;
 
-      els.statTotal.textContent = String(payload.meta?.total_jobs || 0);
+      state.commonKeywords = commonKeywords;
+      if (els.statTotal) {
+        els.statTotal.textContent = String(payload.meta?.total_jobs || 0);
+      }
+
       renderKeywordChips(commonKeywords);
       bindEvents();
       switchView("list");
       await progressiveLoadChunks();
-    } catch (_chunkErr) {
-      const resp = await fetch(buildDataUrl("jobs.json"));
-      payload = await resp.json();
-      state.jobs = preprocessJobs(payload.jobs || []);
-      state.filtered = [...state.jobs];
-
-      const commonKeywords = payload.meta?.common_keywords?.length
-        ? payload.meta.common_keywords
-        : FALLBACK_KEYWORDS;
-      state.commonKeywords = commonKeywords;
-
-      els.statTotal.textContent = String(state.jobs.length);
-      renderMeta(payload.meta || {});
-      renderKeywordChips(commonKeywords);
-      bindEvents();
-      switchView("list");
-      refreshFromCurrentData();
-      setLoadState("完成(兼容模式)");
+      return;
     }
+
+    await initWithJobsPayload(bootstrap.jobsPayload || await fetchJsonWithFallback("jobs.json", bootstrap.baseUrl));
   } catch (err) {
-    els.results.innerHTML = "<p class='empty'>数据加载失败，请先运行导出脚本并使用本地服务器打开页面。</p>";
-    setLoadState("加载失败");
-    console.error(err);
+    try {
+      const payload = await fetchJsonWithFallback("jobs.json");
+      await initWithJobsPayload(payload);
+      return;
+    } catch (_fatal) {
+      if (els.results) {
+        const baseHint = state.dataBaseUrl ? `当前检测目录: ${state.dataBaseUrl}` : "未检测到可用 data 目录";
+        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查 data 目录是否可访问（jobs.index.json 或 jobs.json）。<br>${baseHint}</p>`;
+      }
+      setLoadState("加载失败");
+      console.error(err);
+    }
   }
 }
 

@@ -111,6 +111,8 @@ python src/run_data_pipeline.py --only mihoyo
 - 提供默认常见关键词快捷搜索
 - 前端统计分析模块（Top 公司/类别/城市/关键词命中）
 - 性能优化（输入防抖、预计算搜索字段、分页加载更多）
+- 邀请码校验弹窗（配置文件：`web/config/invite-codes.js`）
+- 数据目录自动探测与回退加载（优先 `jobs.index.json` + chunks，失败时回退 `jobs.json`）
 
 先导出前端数据：
 
@@ -132,6 +134,39 @@ python -m http.server 8080
 ```
 
 浏览器打开：`http://localhost:8080`
+
+重要说明：
+
+- 不要直接双击 `web/index.html` 用 `file://` 打开；这样通常会导致前端 `fetch` JSON 失败。
+- 页面加载依赖以下文件同时存在：
+	- `web/data/jobs.index.json`
+	- `web/data/jobs.json`
+	- `web/data/chunks/jobs-*.json`
+- 如果页面提示数据加载失败，先重新执行：
+
+```powershell
+python src/export_frontend_jobs.py
+```
+
+- 如果你修改了邀请码逻辑后发现页面“突然没有数据”，先检查是否是 `web/data/jobs.index.json` / `web/data/jobs.json` 没有生成，而不是先怀疑邀请码本身。
+
+邀请码配置：
+
+- 文件：`web/config/invite-codes.js`
+- 示例：
+
+```js
+window.__INVITE_CODES__ = [
+	"AYOHI2026"
+];
+```
+
+本地联调推荐顺序：
+
+1. 运行 `python src/export_frontend_jobs.py`
+2. 进入 `web/` 目录启动 `python -m http.server 8080`
+3. 打开 `http://localhost:8080`
+4. 输入邀请码后确认遮罩消失，并观察顶部 `loadState` 是否继续变化
 
 ### 公网部署（GitHub Pages）
 

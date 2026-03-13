@@ -12,7 +12,8 @@
 </head>
 <body>
   <div class="bg-layer"></div>
-  <section id="inviteGate" class="invite-gate">
+  <section id="inviteGate" class="invite-modal" aria-modal="true" role="dialog">
+    <div class="invite-backdrop"></div>
     <div class="invite-card">
       <p class="invite-eyebrow">访问验证</p>
       <h2>请输入邀请码</h2>
@@ -26,7 +27,7 @@
     </div>
   </section>
 
-  <main class="shell hidden" id="appShell">
+  <main class="shell" id="appShell">
     <header class="hero">
       <p class="eyebrow">招聘信息集成站</p>
       <h1>3 月 互联网校招岗位</h1>

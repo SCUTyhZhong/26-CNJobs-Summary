@@ -445,16 +445,29 @@ p {
   display: none;
 }
 
-.invite-gate {
-  min-height: 100vh;
+.invite-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
   display: grid;
   place-items: center;
   padding: 20px;
-  position: relative;
-  z-index: 2;
+}
+
+.invite-modal.hidden {
+  display: none !important;
+}
+
+.invite-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(16, 22, 32, 0.42);
+  backdrop-filter: blur(2px);
 }
 
 .invite-card {
+  position: relative;
+  z-index: 1;
   width: min(560px, 92vw);
   border-radius: 18px;
   border: 1px solid #d7dce7;

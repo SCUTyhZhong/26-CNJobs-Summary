@@ -152,8 +152,18 @@
 2. 兼容路径
 - 如果 index 不存在，回退 web/data/jobs.json。
 
+3. 数据目录探测
+- 前端会优先根据 assets/app.js 的脚本路径反推 ../data/。
+- 若部署路径不固定，再依次尝试 data、./data、/data、web/data、./web/data、/web/data。
+- 结论：app.js 放在 web/assets/ 是允许的，关键是 web/data/jobs.index.json 与 web/data/jobs.json 必须真实存在且可访问。
+
 3. 部署前数据生成
 - 运行 python src/export_frontend_jobs.py。
+
+4. 本地调试红线
+- 不要直接双击 web/index.html 用 file:// 打开页面；浏览器通常会拦截 fetch 本地 JSON。
+- 必须从 web 目录启动静态服务器，再访问 http://localhost:<port>。
+- 如果新增了邀请码校验后页面看似“无法加载数据”，先检查是否缺失 web/data/jobs.index.json / web/data/jobs.json，而不是先怀疑邀请码逻辑。
 
 ### 4.3 前端扩展规则
 
@@ -161,6 +171,11 @@
 - 新统计卡必须基于 state.filtered 计算。
 - 重计算逻辑尽量复用现有函数，避免多处口径不一致。
 - 保持移动端可用（<940px 布局）。
+- 邀请码/遮罩改动不得阻塞 init() 后续数据加载 Promise；验证成功后必须保证遮罩消失并继续执行数据初始化。
+- 修改前端加载逻辑时，必须同时验证三种场景：
+  1. jobs.index.json + chunks 正常存在
+  2. 只有 jobs.json 存在时可回退
+  3. 本地 http.server 启动后可正常访问
 
 ## 5. 新需求管理与交付流程
 
@@ -214,8 +229,10 @@
 
 - export_frontend_jobs.py 成功执行。
 - web/data/jobs.index.json 与 chunks 存在。
+- web/data/jobs.json 存在。
 - 页面显示数据更新时间和数据来源。
 - 关键筛选链路人工验证。
+- 邀请码验证成功后遮罩会消失，且 loadState 会继续进入“定位数据目录 / 加载中 / 完成”。
 
 ## 7. 质量红线
 

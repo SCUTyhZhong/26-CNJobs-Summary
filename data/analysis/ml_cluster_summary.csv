@@ -1,0 +1,11 @@
+cluster_id,cluster_name,size,top_terms
+0,运营::运营,867,运营|数据|策略|电商|用户|业务|数据分析|分析|内容|行业|抖音|sql
+6,后端::测试,494,测试|java|go|c++|python|参与|安全|golang|计算机|mysql|以上|质量
+8,算法::模型,492,模型|算法|模态|训练|llm|nlp|agent|生成|pytorch|学习|视频|ai
+9,技术::招聘,417,招聘|intern|research|协助|市场|管理|数据中心|development|人才|芯片|it|engineer
+2,后端::ai,372,ai|agent|模型|应用|llm|设计|数据|参与|具备|aigc|python|用户
+5,设计::游戏,270,游戏|设计|美术|制作|玩家|unity|引擎|特效|视觉|策划|具备|动画
+3,算法::算法,208,算法|推荐|机器|学习|模型|用户|广告|数据挖掘|优秀|优化|nlp|内容
+7,前端::前端,177,前端|css|html|javascript|前端开发|web|react|js|dom|vue|es6|组件
+4,客户端::客户端,160,客户端|android|移动|swift|ios|kotlin|java|c++|c|app|参与|体验
+1,后端::php,156,php|go|java|逻辑|c++|参与|优秀|python|前瞻|拆分|不仅|操作系统

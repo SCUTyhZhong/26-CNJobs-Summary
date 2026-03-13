@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "generated_at": "2026-03-13T08:29:10.218202+00:00",
+    "total_jobs": 3613,
+    "source_files": [
+      "antgroup_jobs.csv",
+      "bytedance_jobs.csv",
+      "kurogame_jobs.csv",
+      "netease_jobs.csv",
+      "tencent_jobs.csv"
+    ],
+    "common_keywords": [
+      "产品",
+      "设计",
+      "算法",
+      "python",
+      "c++",
+      "java",
+      "数据分析",
+      "go",
+      "机器学习",
+      "后端",
+      "sql",
+      "测试",
+      "llm",
+      "推荐",
+      "深度学习",
+      "pytorch",
+      "前端",
+      "nlp"
+    ],
+    "chunk_size": 500,
+    "chunk_count": 8
+  },
+  "chunks": [
+    {
+      "file": "chunks/jobs-001.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-002.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-003.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-004.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-005.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-006.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-007.json",
+      "count": 500
+    },
+    {
+      "file": "chunks/jobs-008.json",
+      "count": 113
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+topic_id,mean_weight,top_terms
+0,0.018918,数据|sql|数据分析|业务|分析|用户|策略|需求|协助|excel|tiktok|问题
+1,0.01824,php|go|java|逻辑|c++|优秀|参与|python|拆分|前瞻|不仅|操作系统
+2,0.025467,ai|agent|模型|llm|应用|rag|prompt|智能|场景|coding|aigc|落地
+3,0.029439,算法|模型|推荐|学习|机器|nlp|模态|llm|训练|pytorch|优化|tensorflow
+4,0.014258,前端|css|web|html|javascript|前端开发|react|js|dom|vue|es6|组件
+5,0.014695,客户端|android|移动|swift|ios|kotlin|java|c++|app|c|体验|改进
+6,0.015445,游戏|设计|美术|制作|策划|玩家|玩法|风格|特效|视觉|创意|角色
+7,0.01546,测试|质量|保障|安全|java|自动化|go|tiktok|python|工具|c++|参与
+8,0.017137,mysql|高效|redis|认真细致|以上|乐观|中国|积极|交易|编程|go|c++
+9,0.023037,运营|电商|内容|行业|抖音|商家|策略|制定|用户|治理|kol|品类

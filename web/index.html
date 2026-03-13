@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Campus Job Navigator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/styles.css" />
+</head>
+<body>
+  <div class="bg-layer"></div>
+  <main class="shell">
+    <header class="hero">
+      <p class="eyebrow">招聘信息集成站</p>
+      <h1>3 月 互联网校招岗位</h1>
+      <p class="subtitle">非商业用途，仅供求职规划</p>
+      <div class="stat-row">
+        <div class="stat-pill"><span id="statTotal">0</span> total jobs</div>
+        <div class="stat-pill"><span id="statFiltered">0</span> filtered</div>
+        <div class="stat-pill"><span id="statShown">0</span> shown</div>
+        <div class="stat-pill"><span id="loadState">准备中</span></div>
+      </div>
+    </header>
+
+    <section class="public-note">
+      <p><strong>声明：</strong>本页面仅用于学习与求职规划，岗位信息来源于公开招聘页面，最终信息请以原招聘官网为准。</p>
+      <p><strong>数据更新时间：</strong><span id="dataUpdated">-</span></p>
+      <p><strong>数据来源：</strong>网易，字节，腾讯，阿里等校招官网</p>
+    </section>
+
+    <section class="filters">
+      <div class="filter-grid">
+        <label>
+          公司
+          <select id="companyFilter">
+            <option value="">全部公司</option>
+          </select>
+        </label>
+
+        <label>
+          招聘项目
+          <select id="projectFilter">
+            <option value="">全部项目</option>
+          </select>
+        </label>
+
+        <label>
+          岗位类别
+          <select id="categoryFilter">
+            <option value="">全部类别</option>
+          </select>
+        </label>
+
+        <label>
+          城市
+          <select id="cityFilter">
+            <option value="">全部城市</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="search-grid">
+        <input id="titleSearch" type="text" placeholder="搜索岗位名，例如：算法 / 后端 / 产品" />
+        <input id="keywordSearch" type="text" placeholder="搜索职责、要求、加分项关键词，例如：python / 推荐 / 数据分析" />
+      </div>
+
+      <div class="keyword-zone">
+        <span class="keyword-label">常见关键词</span>
+        <div id="keywordChips" class="chips"></div>
+      </div>
+
+      <div class="actions-row">
+        <button id="resetFilters" class="ghost-btn" type="button">重置筛选</button>
+      </div>
+    </section>
+
+    <section class="analytics" id="analyticsSection">
+      <div class="panel-head">
+        <h2>统计分析模块</h2>
+        <p>基于当前筛选结果实时计算</p>
+      </div>
+
+      <div class="metric-grid">
+        <article class="metric-card">
+          <h3>岗位总数</h3>
+          <p id="metricJobs">0</p>
+        </article>
+        <article class="metric-card">
+          <h3>覆盖公司</h3>
+          <p id="metricCompanies">0</p>
+        </article>
+        <article class="metric-card">
+          <h3>招聘项目</h3>
+          <p id="metricProjects">0</p>
+        </article>
+        <article class="metric-card">
+          <h3>覆盖城市</h3>
+          <p id="metricCities">0</p>
+        </article>
+      </div>
+
+      <div class="analysis-grid">
+        <article class="analysis-card">
+          <h3>Top Companies</h3>
+          <div id="chartCompany" class="bar-list"></div>
+        </article>
+        <article class="analysis-card">
+          <h3>Top Categories</h3>
+          <div id="chartCategory" class="bar-list"></div>
+        </article>
+        <article class="analysis-card">
+          <h3>Top Cities</h3>
+          <div id="chartCity" class="bar-list"></div>
+        </article>
+        <article class="analysis-card">
+          <h3>Keyword Hits</h3>
+          <div id="chartKeyword" class="bar-list"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="results" class="cards"></section>
+    <p id="emptyState" class="empty hidden">没有匹配结果，试试减少筛选条件或更换关键词。</p>
+
+    <div class="load-more-wrap">
+      <button id="loadMore" class="load-btn hidden" type="button">加载更多</button>
+    </div>
+  </main>
+
+  <template id="jobCardTemplate">
+    <article class="card">
+      <div class="card-head">
+        <div>
+          <h3 class="job-title"></h3>
+          <p class="meta-row"></p>
+        </div>
+        <a class="detail-link" target="_blank" rel="noopener">查看详情</a>
+      </div>
+
+      <div class="tag-row"></div>
+
+      <div class="content-grid">
+        <section>
+          <h4>岗位职责</h4>
+          <p class="responsibilities"></p>
+        </section>
+        <section>
+          <h4>岗位要求</h4>
+          <p class="requirements"></p>
+        </section>
+      </div>
+
+      <section class="bonus-wrap">
+        <h4>加分项</h4>
+        <p class="bonus"></p>
+      </section>
+    </article>
+  </template>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>

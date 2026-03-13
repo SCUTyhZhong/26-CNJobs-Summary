@@ -5,6 +5,14 @@ const FALLBACK_KEYWORDS = [
 const PAGE_SIZE = 36;
 const CHUNK_FETCH_RETRIES = 1;
 const LOADING_REFRESH_INTERVAL = 2;
+const INVITE_STORAGE_KEY = "job-nav-invite-ok";
+const DEFAULT_INVITE_CODES = ["AYOHI2026"];
+
+const INVITE_CODES = (Array.isArray(window.__INVITE_CODES__) && window.__INVITE_CODES__.length
+  ? window.__INVITE_CODES__
+  : DEFAULT_INVITE_CODES)
+  .map(code => toText(code).trim().toLowerCase())
+  .filter(Boolean);
 
 function toText(value) {
   if (typeof value === "string") return value;
@@ -18,6 +26,8 @@ const state = {
   filtered: [],
   visibleCount: PAGE_SIZE,
   commonKeywords: FALLBACK_KEYWORDS,
+  currentView: "list",
+  analyticsDirty: true,
   chunks: [],
   chunkProgress: {
     loaded: 0,
@@ -34,6 +44,16 @@ const state = {
 };
 
 const els = {
+  appShell: document.getElementById("appShell"),
+  inviteGate: document.getElementById("inviteGate"),
+  inviteCodeInput: document.getElementById("inviteCodeInput"),
+  inviteSubmit: document.getElementById("inviteSubmit"),
+  inviteError: document.getElementById("inviteError"),
+  inviteSuccess: document.getElementById("inviteSuccess"),
+  listViewBtn: document.getElementById("listViewBtn"),
+  statsViewBtn: document.getElementById("statsViewBtn"),
+  listView: document.getElementById("listView"),
+  statsView: document.getElementById("statsView"),
   statTotal: document.getElementById("statTotal"),
   statFiltered: document.getElementById("statFiltered"),
   statShown: document.getElementById("statShown"),
@@ -72,10 +92,6 @@ function trimText(text, max = 180) {
   return `${text.slice(0, max)}...`;
 }
 
-function contains(haystack, needle) {
-  return (haystack || "").toLowerCase().includes((needle || "").toLowerCase());
-}
-
 function debounce(fn, wait) {
   let timer = null;
   return (...args) => {
@@ -106,9 +122,23 @@ function detectChunkConcurrency() {
   return 3;
 }
 
+function detectInitialChunkCount(totalChunks) {
+  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
+  if (totalChunks <= 1) return totalChunks;
+  return isMobile ? 1 : Math.min(2, totalChunks);
+}
+
+function queueIdle(task) {
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(task, { timeout: 1200 });
+    return;
+  }
+  setTimeout(task, 60);
+}
+
 function preprocessJobs(jobs) {
   return jobs.map(job => {
-    const normalized = {
+    return {
       ...job,
       company: toText(job.company),
       recruit_type: toText(job.recruit_type),
@@ -120,13 +150,21 @@ function preprocessJobs(jobs) {
       bonus_points: toText(job.bonus_points),
       detail_url: toText(job.detail_url)
     };
-
-    return {
-      ...normalized,
-      _titleLower: normalized.title.toLowerCase(),
-      _textBlobLower: `${normalized.responsibilities} ${normalized.requirements} ${normalized.bonus_points}`.toLowerCase()
-    };
   });
+}
+
+function titleLower(job) {
+  if (!job._titleLower) {
+    job._titleLower = toText(job.title).toLowerCase();
+  }
+  return job._titleLower;
+}
+
+function textBlobLower(job) {
+  if (!job._textBlobLower) {
+    job._textBlobLower = `${toText(job.responsibilities)} ${toText(job.requirements)} ${toText(job.bonus_points)}`.toLowerCase();
+  }
+  return job._textBlobLower;
 }
 
 function populateSelect(selectEl, values, selectedValue = "") {
@@ -151,8 +189,8 @@ function matchesFilters(job, filters, excludeKeys = new Set()) {
   if (!excludeKeys.has("project") && filters.project && job.recruit_type !== filters.project) return false;
   if (!excludeKeys.has("category") && filters.category && job.job_category !== filters.category) return false;
   if (!excludeKeys.has("city") && filters.city && job.work_city !== filters.city) return false;
-  if (!excludeKeys.has("title") && filters.title && !job._titleLower.includes(filters.title.toLowerCase())) return false;
-  if (!excludeKeys.has("keyword") && filters.keyword && !job._textBlobLower.includes(filters.keyword.toLowerCase())) return false;
+  if (!excludeKeys.has("title") && filters.title && !titleLower(job).includes(filters.title.toLowerCase())) return false;
+  if (!excludeKeys.has("keyword") && filters.keyword && !textBlobLower(job).includes(filters.keyword.toLowerCase())) return false;
   return true;
 }
 
@@ -270,7 +308,7 @@ function keywordHits(rows, keywords, limit = 6) {
   keywords.forEach(keyword => {
     let count = 0;
     rows.forEach(row => {
-      if (row._textBlobLower.includes(keyword.toLowerCase())) {
+      if (textBlobLower(row).includes(keyword.toLowerCase())) {
         count += 1;
       }
     });
@@ -314,6 +352,22 @@ function updateAnalytics() {
   renderBarList(els.chartCategory, topCounts(rows, "job_category"));
   renderBarList(els.chartCity, topCounts(rows, "work_city"));
   renderBarList(els.chartKeyword, keywordHits(rows, state.commonKeywords));
+  state.analyticsDirty = false;
+}
+
+function renderStatsIfNeeded(force = false) {
+  if (state.currentView !== "stats") return;
+  if (!force && !state.analyticsDirty) return;
+  queueIdle(() => {
+    if (state.currentView === "stats") {
+      updateAnalytics();
+    }
+  });
+}
+
+function updateResultCounters() {
+  els.statFiltered.textContent = String(state.filtered.length);
+  els.statShown.textContent = String(Math.min(state.filtered.length, state.visibleCount));
 }
 
 function applyFilters() {
@@ -321,26 +375,36 @@ function applyFilters() {
   state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
 
   state.visibleCount = PAGE_SIZE;
-  updateAnalytics();
-  renderCards();
+  if (state.currentView === "list") {
+    renderCards();
+  } else {
+    updateResultCounters();
+  }
+  state.analyticsDirty = true;
+  renderStatsIfNeeded();
 }
 
 function refreshFromCurrentData() {
   syncFilterOptions();
   state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
-  updateAnalytics();
-  renderCards();
+  if (state.currentView === "list") {
+    renderCards();
+  } else {
+    updateResultCounters();
+  }
+  state.analyticsDirty = true;
+  renderStatsIfNeeded();
 }
 
 function refreshDuringLoading(force = false) {
   state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
   const shouldRender = force || state.chunkProgress.loaded === 1 || state.chunkProgress.loaded % LOADING_REFRESH_INTERVAL === 0;
-  if (shouldRender) {
+  if (shouldRender && state.currentView === "list") {
     renderCards();
   } else {
-    els.statFiltered.textContent = String(state.filtered.length);
-    els.statShown.textContent = String(Math.min(state.filtered.length, state.visibleCount));
+    updateResultCounters();
   }
+  state.analyticsDirty = true;
 }
 
 async function loadChunkFile(filePath) {
@@ -385,29 +449,44 @@ async function progressiveLoadChunks() {
     return;
   }
 
-  const concurrency = detectChunkConcurrency();
-  const queue = [...state.chunks];
+  const initialCount = detectInitialChunkCount(state.chunks.length);
+  const firstBatch = state.chunks.slice(0, initialCount);
+  const restBatch = state.chunks.slice(initialCount);
   let failed = 0;
 
-  async function worker() {
-    while (queue.length) {
-      const chunk = queue.shift();
-      if (!chunk) return;
+  async function processQueue(items, concurrency) {
+    const queue = [...items];
 
-      try {
-        await loadChunkWithRetry(chunk.file);
-      } catch (err) {
-        failed += 1;
-        console.error("Chunk load error:", chunk.file, err);
+    async function worker() {
+      while (queue.length) {
+        const chunk = queue.shift();
+        if (!chunk) return;
+
+        try {
+          await loadChunkWithRetry(chunk.file);
+        } catch (err) {
+          failed += 1;
+          console.error("Chunk load error:", chunk.file, err);
+        }
+
+        setLoadState(`加载中 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
+        refreshDuringLoading();
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
-
-      setLoadState(`加载中 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
-      refreshDuringLoading();
-      await new Promise(resolve => setTimeout(resolve, 0));
     }
+
+    await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
   }
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  await processQueue(firstBatch, detectChunkConcurrency());
+  refreshDuringLoading(true);
+
+  if (restBatch.length > 0) {
+    setLoadState(`首屏已就绪，后台继续加载 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
+    await sleep(20);
+    const bgConcurrency = Math.max(1, detectChunkConcurrency() - 1);
+    await processQueue(restBatch, bgConcurrency);
+  }
 
   if (failed > 0) {
     setLoadState(`部分完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}，失败 ${failed}`);
@@ -421,7 +500,98 @@ async function progressiveLoadChunks() {
   setLoadState(`完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
 }
 
+function switchView(view) {
+  state.currentView = view;
+
+  const isList = view === "list";
+  els.listView.classList.toggle("hidden", !isList);
+  els.statsView.classList.toggle("hidden", isList);
+  els.listViewBtn.classList.toggle("active", isList);
+  els.statsViewBtn.classList.toggle("active", !isList);
+
+  if (isList) {
+    renderCards();
+  } else {
+    renderStatsIfNeeded(true);
+  }
+}
+
+function isInviteCodeValid(rawCode) {
+  const code = toText(rawCode).trim().toLowerCase();
+  if (!code) return false;
+  return INVITE_CODES.includes(code);
+}
+
+function bindInviteGate() {
+  return new Promise(resolve => {
+    let resolved = false;
+
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve();
+    };
+
+    const gateEl = els.inviteGate || document.getElementById("inviteGate");
+    const appShellEl = els.appShell || document.getElementById("appShell") || document.querySelector(".shell");
+
+    const openApp = () => {
+      try {
+        if (gateEl) gateEl.classList.add("hidden");
+        if (appShellEl) appShellEl.classList.remove("hidden");
+        sessionStorage.setItem(INVITE_STORAGE_KEY, "1");
+      } finally {
+        finish();
+      }
+    };
+
+    const showInviteError = () => {
+      if (els.inviteSuccess) els.inviteSuccess.classList.add("hidden");
+      if (els.inviteError) els.inviteError.classList.remove("hidden");
+    };
+
+    const showInviteSuccess = () => {
+      if (els.inviteError) els.inviteError.classList.add("hidden");
+      if (els.inviteSuccess) els.inviteSuccess.classList.remove("hidden");
+    };
+
+    if (!els.inviteCodeInput || !els.inviteSubmit) {
+      openApp();
+      return;
+    };
+
+    if (sessionStorage.getItem(INVITE_STORAGE_KEY) === "1") {
+      openApp();
+      return;
+    }
+
+    const submit = () => {
+      const code = els.inviteCodeInput.value;
+      if (isInviteCodeValid(code)) {
+        showInviteSuccess();
+        els.inviteCodeInput.disabled = true;
+        els.inviteSubmit.disabled = true;
+        setTimeout(openApp, 450);
+        return;
+      }
+      showInviteError();
+    };
+
+    els.inviteSubmit.addEventListener("click", submit);
+    els.inviteCodeInput.addEventListener("keydown", e => {
+      if (e.key === "Enter") submit();
+    });
+  });
+}
+
+function bindViewSwitch() {
+  els.listViewBtn.addEventListener("click", () => switchView("list"));
+  els.statsViewBtn.addEventListener("click", () => switchView("stats"));
+}
+
 function bindEvents() {
+  bindViewSwitch();
+
   els.companyFilter.addEventListener("change", e => {
     state.filters.company = e.target.value;
     applyFilters();
@@ -480,11 +650,13 @@ function bindEvents() {
 }
 
 async function init() {
+  await bindInviteGate();
+
   try {
     setLoadState("读取索引");
     let payload;
     try {
-      const indexResp = await fetch(buildDataUrl("jobs.index.json"), { cache: "no-store" });
+      const indexResp = await fetch(buildDataUrl("jobs.index.json"));
       if (!indexResp.ok) {
         throw new Error("missing jobs.index.json");
       }
@@ -501,6 +673,7 @@ async function init() {
       els.statTotal.textContent = String(payload.meta?.total_jobs || 0);
       renderKeywordChips(commonKeywords);
       bindEvents();
+      switchView("list");
       await progressiveLoadChunks();
     } catch (_chunkErr) {
       const resp = await fetch(buildDataUrl("jobs.json"));
@@ -517,6 +690,7 @@ async function init() {
       renderMeta(payload.meta || {});
       renderKeywordChips(commonKeywords);
       bindEvents();
+      switchView("list");
       refreshFromCurrentData();
       setLoadState("完成(兼容模式)");
     }

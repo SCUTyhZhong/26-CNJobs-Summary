@@ -9,7 +9,12 @@ from pathlib import Path
 
 from pipeline_utils import discover_job_csv_files
 
-CHUNK_SIZE = 500
+FULL_CHUNK_SIZE = 500
+SUMMARY_CHUNK_SIZE = 120
+RESPONSIBILITY_PREVIEW_LIMIT = 88
+REQUIREMENTS_PREVIEW_LIMIT = 88
+BONUS_PREVIEW_LIMIT = 56
+SEARCH_BLOB_LIMIT = 220
 
 
 def discover_csv_files(data_dir: Path) -> list[Path]:
@@ -51,6 +56,47 @@ def load_rows(path: Path) -> list[dict]:
     return rows
 
 
+def compact_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def preview_text(value: str, limit: int) -> str:
+    value = compact_text(value)
+    if len(value) <= limit:
+        return value
+    return f"{value[:limit].rstrip()}..."
+
+
+def build_search_blob(job: dict) -> str:
+    text = " ".join(
+        [
+            compact_text(job.get("title", "")),
+            compact_text(job.get("responsibilities", "")),
+            compact_text(job.get("requirements", "")),
+            compact_text(job.get("bonus_points", "")),
+        ]
+    )
+    if len(text) <= SEARCH_BLOB_LIMIT:
+        return text
+    return f"{text[:SEARCH_BLOB_LIMIT].rstrip()}..."
+
+
+def build_summary_job(job: dict) -> dict:
+    return {
+        "job_id": job.get("job_id", ""),
+        "company": compact_text(job.get("company", "")),
+        "title": compact_text(job.get("title", "")),
+        "recruit_type": compact_text(job.get("recruit_type", "")),
+        "job_category": compact_text(job.get("job_category", "")),
+        "work_city": compact_text(job.get("work_city", "")),
+        "detail_url": compact_text(job.get("detail_url", "")),
+        "responsibilities": preview_text(job.get("responsibilities", ""), RESPONSIBILITY_PREVIEW_LIMIT),
+        "requirements": preview_text(job.get("requirements", ""), REQUIREMENTS_PREVIEW_LIMIT),
+        "bonus_points": preview_text(job.get("bonus_points", ""), BONUS_PREVIEW_LIMIT),
+        "search_blob": build_search_blob(job),
+    }
+
+
 def export_jobs_json(data_dir: Path, output_file: Path) -> None:
     jobs = []
     files = discover_csv_files(data_dir)
@@ -76,7 +122,7 @@ def export_jobs_json(data_dir: Path, output_file: Path) -> None:
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
 
@@ -88,32 +134,42 @@ def export_chunked_payload(web_data_dir: Path, jobs: list[dict], meta: dict) -> 
     chunks_dir = web_data_dir / "chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
+    for stale_file in chunks_dir.glob("jobs-*.json"):
+        stale_file.unlink(missing_ok=True)
+
     chunk_entries = []
-    for idx in range(0, len(jobs), CHUNK_SIZE):
-        chunk_jobs = jobs[idx : idx + CHUNK_SIZE]
-        chunk_no = (idx // CHUNK_SIZE) + 1
+    summary_jobs = [build_summary_job(job) for job in jobs]
+
+    for idx in range(0, len(summary_jobs), SUMMARY_CHUNK_SIZE):
+        chunk_jobs = summary_jobs[idx : idx + SUMMARY_CHUNK_SIZE]
+        chunk_no = (idx // SUMMARY_CHUNK_SIZE) + 1
         filename = f"jobs-{chunk_no:03d}.json"
         path = chunks_dir / filename
         chunk_payload = {
             "meta": {
                 "chunk_no": chunk_no,
                 "count": len(chunk_jobs),
+                "mode": "summary",
             },
             "jobs": chunk_jobs,
         }
-        path.write_text(json.dumps(chunk_payload, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps(chunk_payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
         chunk_entries.append({"file": f"chunks/{filename}", "count": len(chunk_jobs)})
 
     index_payload = {
         "meta": {
             **meta,
-            "chunk_size": CHUNK_SIZE,
+            "chunk_size": SUMMARY_CHUNK_SIZE,
             "chunk_count": len(chunk_entries),
+            "chunk_mode": "summary",
         },
         "chunks": chunk_entries,
     }
     (web_data_dir / "jobs.index.json").write_text(
-        json.dumps(index_payload, ensure_ascii=False, indent=2),
+        json.dumps(index_payload, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
 

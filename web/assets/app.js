@@ -46,6 +46,10 @@ const state = {
   }
 };
 
+function hasActiveFilters(filters) {
+  return Boolean(filters.company || filters.project || filters.category || filters.city || filters.title || filters.keyword);
+}
+
 const els = {
   appShell: document.getElementById("appShell"),
   inviteGate: document.getElementById("inviteGate"),
@@ -215,7 +219,7 @@ function detectChunkConcurrency() {
 function detectInitialChunkCount(totalChunks) {
   const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
   if (totalChunks <= 1) return totalChunks;
-  return isMobile ? 1 : Math.min(2, totalChunks);
+  return isMobile ? 1 : Math.min(4, totalChunks);
 }
 
 function queueIdle(task) {
@@ -237,7 +241,8 @@ function preprocessJobs(jobs) {
     responsibilities: toText(job.responsibilities),
     requirements: toText(job.requirements),
     bonus_points: toText(job.bonus_points),
-    detail_url: toText(job.detail_url)
+    detail_url: toText(job.detail_url),
+    search_blob: toText(job.search_blob)
   }));
 }
 
@@ -250,9 +255,17 @@ function titleLower(job) {
 
 function textBlobLower(job) {
   if (!job._textBlobLower) {
-    job._textBlobLower = `${toText(job.responsibilities)} ${toText(job.requirements)} ${toText(job.bonus_points)}`.toLowerCase();
+    const source = job.search_blob || `${toText(job.responsibilities)} ${toText(job.requirements)} ${toText(job.bonus_points)}`;
+    job._textBlobLower = source.toLowerCase();
   }
   return job._textBlobLower;
+}
+
+function computeFilteredJobs() {
+  if (!hasActiveFilters(state.filters)) {
+    return [...state.jobs];
+  }
+  return state.jobs.filter(job => matchesFilters(job, state.filters));
 }
 
 function populateSelect(selectEl, values, selectedValue = "") {
@@ -475,7 +488,7 @@ function updateResultCounters() {
 
 function applyFilters() {
   syncFilterOptions();
-  state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
+  state.filtered = computeFilteredJobs();
   state.visibleCount = PAGE_SIZE;
 
   if (state.currentView === "list") {
@@ -490,7 +503,7 @@ function applyFilters() {
 
 function refreshFromCurrentData() {
   syncFilterOptions();
-  state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
+  state.filtered = computeFilteredJobs();
 
   if (state.currentView === "list") {
     renderCards();
@@ -503,8 +516,8 @@ function refreshFromCurrentData() {
 }
 
 function refreshDuringLoading(force = false) {
-  state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
-  const shouldRender = force || state.chunkProgress.loaded === 1 || state.chunkProgress.loaded % LOADING_REFRESH_INTERVAL === 0;
+  state.filtered = computeFilteredJobs();
+  const shouldRender = force || state.chunkProgress.loaded === 1 || state.chunkProgress.loaded % (LOADING_REFRESH_INTERVAL + 2) === 0;
   if (shouldRender && state.currentView === "list") {
     renderCards();
   } else {
@@ -603,7 +616,7 @@ async function progressiveLoadChunks() {
   if (restBatch.length > 0) {
     setLoadState(`首屏已就绪，后台继续加载 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
     await sleep(20);
-    await processQueue(restBatch, Math.max(1, detectChunkConcurrency() - 1));
+    await processQueue(restBatch, detectChunkConcurrency());
   }
 
   if (state.jobs.length === 0 || failed >= state.chunkProgress.total) {

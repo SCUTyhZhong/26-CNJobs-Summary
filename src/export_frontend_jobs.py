@@ -1,54 +1,23 @@
 from __future__ import annotations
 
-import csv
 import json
 import re
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from pipeline_utils import discover_job_csv_files
+from data_contract import load_jobs_from_file
+from pipeline_utils import discover_job_data_files
 
 CHUNK_SIZE = 500
 
 
 def discover_csv_files(data_dir: Path) -> list[Path]:
-    return discover_job_csv_files(data_dir)
-
-
-def split_pipe(value: str) -> list[str]:
-    if not value:
-        return []
-    return [item.strip() for item in value.split("|") if item.strip()]
+    return discover_job_data_files(data_dir)
 
 
 def load_rows(path: Path) -> list[dict]:
-    rows = []
-    with path.open("r", encoding="utf-8-sig", newline="") as fp:
-        reader = csv.DictReader(fp)
-        for row in reader:
-            row = {k: (v or "").strip() for k, v in row.items()}
-            rows.append(
-                {
-                    "company": row.get("company", ""),
-                    "job_id": row.get("job_id", ""),
-                    "title": row.get("title", ""),
-                    "recruit_type": row.get("recruit_type", ""),
-                    "job_category": row.get("job_category", ""),
-                    "job_function": row.get("job_function", ""),
-                    "work_city": row.get("work_city", ""),
-                    "work_cities": split_pipe(row.get("work_cities", "")),
-                    "responsibilities": row.get("responsibilities", ""),
-                    "requirements": row.get("requirements", ""),
-                    "bonus_points": row.get("bonus_points", ""),
-                    "tags": split_pipe(row.get("tags", "")),
-                    "publish_time": row.get("publish_time", ""),
-                    "detail_url": row.get("detail_url", ""),
-                    "source_page": row.get("source_page", ""),
-                    "fetched_at": row.get("fetched_at", ""),
-                }
-            )
-    return rows
+    return load_jobs_from_file(path)
 
 
 def export_jobs_json(data_dir: Path, output_file: Path) -> None:
@@ -87,6 +56,9 @@ def export_jobs_json(data_dir: Path, output_file: Path) -> None:
 def export_chunked_payload(web_data_dir: Path, jobs: list[dict], meta: dict) -> None:
     chunks_dir = web_data_dir / "chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
+
+    for stale in chunks_dir.glob("jobs-*.json"):
+        stale.unlink(missing_ok=True)
 
     chunk_entries = []
     for idx in range(0, len(jobs), CHUNK_SIZE):

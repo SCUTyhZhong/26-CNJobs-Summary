@@ -4,6 +4,13 @@ const FALLBACK_KEYWORDS = [
 
 const PAGE_SIZE = 36;
 
+function toText(value) {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.filter(Boolean).join("/");
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
 const state = {
   jobs: [],
   filtered: [],
@@ -54,7 +61,7 @@ const els = {
 };
 
 function uniqSorted(values) {
-  return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  return [...new Set(values.map(toText).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 }
 
 function trimText(text, max = 180) {
@@ -82,11 +89,26 @@ function setLoadState(text) {
 }
 
 function preprocessJobs(jobs) {
-  return jobs.map(job => ({
-    ...job,
-    _titleLower: (job.title || "").toLowerCase(),
-    _textBlobLower: `${job.responsibilities || ""} ${job.requirements || ""} ${job.bonus_points || ""}`.toLowerCase()
-  }));
+  return jobs.map(job => {
+    const normalized = {
+      ...job,
+      company: toText(job.company),
+      recruit_type: toText(job.recruit_type),
+      job_category: toText(job.job_category),
+      work_city: toText(job.work_city),
+      title: toText(job.title),
+      responsibilities: toText(job.responsibilities),
+      requirements: toText(job.requirements),
+      bonus_points: toText(job.bonus_points),
+      detail_url: toText(job.detail_url)
+    };
+
+    return {
+      ...normalized,
+      _titleLower: normalized.title.toLowerCase(),
+      _textBlobLower: `${normalized.responsibilities} ${normalized.requirements} ${normalized.bonus_points}`.toLowerCase()
+    };
+  });
 }
 
 function populateSelect(selectEl, values, selectedValue = "") {
@@ -320,14 +342,22 @@ async function progressiveLoadChunks() {
     return;
   }
 
-  await loadChunkFile(state.chunks[0].file);
-
-  for (let i = 1; i < state.chunks.length; i++) {
+  let failed = 0;
+  for (let i = 0; i < state.chunks.length; i++) {
     const file = state.chunks[i].file;
-    await loadChunkFile(file);
+    try {
+      await loadChunkFile(file);
+    } catch (err) {
+      failed += 1;
+      console.error("Chunk load error:", file, err);
+    }
     await new Promise(resolve => setTimeout(resolve, 0));
   }
 
+  if (failed > 0) {
+    setLoadState(`部分完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}，失败 ${failed}`);
+    return;
+  }
   setLoadState(`完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
 }
 

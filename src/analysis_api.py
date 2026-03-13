@@ -13,7 +13,8 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.decomposition import NMF, TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
-from pipeline_utils import discover_job_csv_files
+from data_contract import load_jobs_from_file
+from pipeline_utils import discover_job_data_files
 
 try:
 	import jieba
@@ -22,27 +23,30 @@ except Exception:
 
 def discover_data_files(data_dir: str | Path) -> list[Path]:
 	"""Find all full job CSV files under data directory."""
-	return discover_job_csv_files(data_dir)
+	return discover_job_data_files(data_dir)
 
 
-def _split_pipe(value: str) -> list[str]:
-	if not value:
-		return []
-	return [item.strip() for item in value.split("|") if item.strip()]
+def _as_text(value: Any) -> str:
+	if value is None:
+		return ""
+	if isinstance(value, str):
+		return value.strip()
+	if isinstance(value, (list, tuple, set)):
+		items = [_as_text(item) for item in value]
+		return " ".join(item for item in items if item)
+	return str(value).strip()
+
+
+def _join_text(parts: list[Any]) -> str:
+	return " ".join(text for text in (_as_text(p) for p in parts) if text)
 
 
 def load_jobs(csv_path: str | Path) -> list[dict[str, Any]]:
-	"""Load normalized jobs from a single CSV file."""
-	path = Path(csv_path)
-	jobs: list[dict[str, Any]] = []
-	with path.open("r", encoding="utf-8-sig", newline="") as fp:
-		reader = csv.DictReader(fp)
-		for row in reader:
-			row = {k: (v or "").strip() for k, v in row.items()}
-			row["work_cities_list"] = _split_pipe(row.get("work_cities", ""))
-			row["tags_list"] = _split_pipe(row.get("tags", ""))
-			row["source_file"] = path.name
-			jobs.append(row)
+	"""Load normalized jobs from a single dataset file (CSV/JSONL)."""
+	jobs = load_jobs_from_file(csv_path)
+	for row in jobs:
+		row["work_cities_list"] = list(row.get("work_cities") or [])
+		row["tags_list"] = list(row.get("tags") or [])
 	return jobs
 
 
@@ -228,7 +232,8 @@ MEANINGLESS_TERMS = {
 }
 
 
-def _normalize_city(city: str) -> str:
+def _normalize_city(city: Any) -> str:
+	city = _as_text(city)
 	if not city:
 		return "Unknown"
 	city = city.strip()
@@ -252,7 +257,7 @@ def _safe_ratio(numerator: int, denominator: int) -> float:
 
 
 def _detect_career_track(job: dict[str, Any]) -> str:
-	text = " ".join(
+	text = _join_text(
 		[
 			job.get("title", ""),
 			job.get("job_category", ""),
@@ -270,7 +275,7 @@ def _detect_career_track(job: dict[str, Any]) -> str:
 			best_score = score
 
 	if best_score == 0:
-		category = job.get("job_category", "").strip()
+		category = _as_text(job.get("job_category", "")).strip()
 		if category:
 			return category.lower()
 	return best_track
@@ -307,7 +312,7 @@ def analyze_career_guidance(jobs: list[dict[str, Any]], top_n: int = 8) -> dict[
 		company_track_counter[company][track] += 1
 
 		track_total_counter[track] += 1
-		recruit_type = job.get("recruit_type", "").lower()
+		recruit_type = _as_text(job.get("recruit_type", "")).lower()
 		if any(k in recruit_type for k in ["实习", "intern"]):
 			track_intern_counter[track] += 1
 
@@ -396,13 +401,13 @@ def analyze_skills(
 	normalized_keywords = [k.lower() for k in keywords]
 	all_texts = []
 	for job in jobs:
-		text = " ".join(
+		text = _join_text(
 			[
 				job.get("title", ""),
 				job.get("requirements", ""),
 				job.get("bonus_points", ""),
 				job.get("responsibilities", ""),
-				" ".join(job.get("tags_list", [])),
+				job.get("tags_list", []),
 			]
 		).lower()
 		all_texts.append(text)
@@ -458,9 +463,9 @@ def _compose_job_text(job: dict[str, Any]) -> str:
 		job.get("responsibilities", ""),
 		job.get("requirements", ""),
 		job.get("bonus_points", ""),
-		" ".join(job.get("tags_list", [])),
+		job.get("tags_list", []),
 	]
-	return " ".join(p for p in parts if p).strip()
+	return _join_text(parts).strip()
 
 
 def _tokenize_mixed_text(text: str) -> list[str]:

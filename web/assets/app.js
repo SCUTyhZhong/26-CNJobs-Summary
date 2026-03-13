@@ -3,6 +3,8 @@ const FALLBACK_KEYWORDS = [
 ];
 
 const PAGE_SIZE = 36;
+const CHUNK_FETCH_RETRIES = 1;
+const LOADING_REFRESH_INTERVAL = 2;
 
 function toText(value) {
   if (typeof value === "string") return value;
@@ -86,6 +88,22 @@ function setLoadState(text) {
   if (els.loadState) {
     els.loadState.textContent = text;
   }
+}
+
+function buildDataUrl(relativePath) {
+  return new URL(`data/${relativePath}`, window.location.href).toString();
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function detectChunkConcurrency() {
+  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
+  const net = navigator.connection?.effectiveType || "";
+  if (net.includes("2g") || net === "slow-2g") return 1;
+  if (isMobile || net.includes("3g")) return 2;
+  return 3;
 }
 
 function preprocessJobs(jobs) {
@@ -314,8 +332,19 @@ function refreshFromCurrentData() {
   renderCards();
 }
 
+function refreshDuringLoading(force = false) {
+  state.filtered = state.jobs.filter(job => matchesFilters(job, state.filters));
+  const shouldRender = force || state.chunkProgress.loaded === 1 || state.chunkProgress.loaded % LOADING_REFRESH_INTERVAL === 0;
+  if (shouldRender) {
+    renderCards();
+  } else {
+    els.statFiltered.textContent = String(state.filtered.length);
+    els.statShown.textContent = String(Math.min(state.filtered.length, state.visibleCount));
+  }
+}
+
 async function loadChunkFile(filePath) {
-  const resp = await fetch(`data/${filePath}`, { cache: "no-store" });
+  const resp = await fetch(buildDataUrl(filePath));
   if (!resp.ok) {
     throw new Error(`Chunk load failed: ${filePath}`);
   }
@@ -323,8 +352,22 @@ async function loadChunkFile(filePath) {
   const jobs = preprocessJobs(payload.jobs || []);
   state.jobs.push(...jobs);
   state.chunkProgress.loaded += 1;
-  setLoadState(`加载中 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
-  refreshFromCurrentData();
+}
+
+async function loadChunkWithRetry(filePath) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= CHUNK_FETCH_RETRIES; attempt++) {
+    try {
+      await loadChunkFile(filePath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < CHUNK_FETCH_RETRIES) {
+        await sleep(220 * (attempt + 1));
+      }
+    }
+  }
+  throw lastErr || new Error(`Chunk load failed: ${filePath}`);
 }
 
 function renderMeta(meta) {
@@ -342,22 +385,39 @@ async function progressiveLoadChunks() {
     return;
   }
 
+  const concurrency = detectChunkConcurrency();
+  const queue = [...state.chunks];
   let failed = 0;
-  for (let i = 0; i < state.chunks.length; i++) {
-    const file = state.chunks[i].file;
-    try {
-      await loadChunkFile(file);
-    } catch (err) {
-      failed += 1;
-      console.error("Chunk load error:", file, err);
+
+  async function worker() {
+    while (queue.length) {
+      const chunk = queue.shift();
+      if (!chunk) return;
+
+      try {
+        await loadChunkWithRetry(chunk.file);
+      } catch (err) {
+        failed += 1;
+        console.error("Chunk load error:", chunk.file, err);
+      }
+
+      setLoadState(`加载中 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
+      refreshDuringLoading();
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
-    await new Promise(resolve => setTimeout(resolve, 0));
   }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
   if (failed > 0) {
     setLoadState(`部分完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}，失败 ${failed}`);
+    refreshDuringLoading(true);
+    refreshFromCurrentData();
     return;
   }
+
+  refreshDuringLoading(true);
+  refreshFromCurrentData();
   setLoadState(`完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
 }
 
@@ -424,7 +484,7 @@ async function init() {
     setLoadState("读取索引");
     let payload;
     try {
-      const indexResp = await fetch("data/jobs.index.json", { cache: "no-store" });
+      const indexResp = await fetch(buildDataUrl("jobs.index.json"), { cache: "no-store" });
       if (!indexResp.ok) {
         throw new Error("missing jobs.index.json");
       }
@@ -443,7 +503,7 @@ async function init() {
       bindEvents();
       await progressiveLoadChunks();
     } catch (_chunkErr) {
-      const resp = await fetch("data/jobs.json", { cache: "no-store" });
+      const resp = await fetch(buildDataUrl("jobs.json"));
       payload = await resp.json();
       state.jobs = preprocessJobs(payload.jobs || []);
       state.filtered = [...state.jobs];

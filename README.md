@@ -103,6 +103,27 @@ python -m http.server 8080
 
 浏览器打开：`http://localhost:8080`
 
+### 公网部署（GitHub Pages）
+
+仓库已支持 GitHub Actions 自动部署，工作流文件：
+
+- `.github/workflows/deploy-pages.yml`
+
+每次推送到 `main` 会自动执行：
+
+1. 运行 `python src/export_frontend_jobs.py` 生成前端数据
+2. 发布 `web/` 目录到 GitHub Pages
+
+首次开启步骤：
+
+1. 打开仓库 `Settings -> Pages`
+2. 在 `Build and deployment` 中选择 `Source: GitHub Actions`
+3. 推送一次代码或在 `Actions` 手动运行 `Deploy Pages`
+
+发布成功后，访问地址通常为：
+
+- `https://<your-github-username>.github.io/<repo-name>/`
+
 命令行入口：
 
 ```powershell

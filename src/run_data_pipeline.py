@@ -5,8 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pipeline_utils import discover_scraper_scripts
+# Spiders migrated to Scrapy framework (run via scrapy crawl)
+SCRAPY_SPIDERS: list[str] = ["tencent", "bilibili", "netease", "antgroup", "mihoyo"]
 
+# Legacy script-based scrapers (Playwright or other non-Scrapy tools)
+LEGACY_SCRAPER_SUFFIX = "_campus_scraper.py"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -35,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip running analysis export",
     )
     parser.add_argument(
+        "--skip-lancedb",
+        action="store_true",
+        help="Skip rebuilding LanceDB after crawling",
+    )
+    parser.add_argument(
         "--skip-frontend-export",
         action="store_true",
         help="Skip running frontend data export",
@@ -52,9 +60,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _site_from_script(script: Path) -> str:
-    return script.name.replace("_campus_scraper.py", "")
-
 
 def _run(cmd: list[str], cwd: Path, dry_run: bool = False) -> int:
     pretty = " ".join(cmd)
@@ -67,28 +72,59 @@ def _run(cmd: list[str], cwd: Path, dry_run: bool = False) -> int:
 
 def run_crawlers(args: argparse.Namespace, root: Path) -> bool:
     src_dir = root / "src"
-    scripts = discover_scraper_scripts(src_dir)
+    scrapy_dir = root / "scrapy_crawlers"
+
+    # Discover legacy script-based scrapers (exclude Scrapy-migrated ones)
+    legacy_scripts: dict[str, Path] = {}
+    for path in sorted(src_dir.glob(f"*{LEGACY_SCRAPER_SUFFIX}")):
+        site = path.name.replace(LEGACY_SCRAPER_SUFFIX, "")
+        if site not in SCRAPY_SPIDERS and not path.name.startswith("_"):
+            legacy_scripts[site] = path
+
+    # Build ordered tasks: [("scrapy", name), ...] + [("legacy", name), ...]
+    tasks: list[tuple[str, str]] = []
+    for name in SCRAPY_SPIDERS:
+        tasks.append(("scrapy", name))
+    for name in sorted(legacy_scripts):
+        tasks.append(("legacy", name))
+
     if args.only:
         wanted = set(args.only)
-        scripts = [script for script in scripts if _site_from_script(script) in wanted]
+        tasks = [(kind, name) for kind, name in tasks if name in wanted]
 
-    if not scripts:
-        print("No scraper scripts selected.")
+    if not tasks:
+        print("No crawlers selected.")
         return True
 
     print("Selected crawlers:")
-    for script in scripts:
-        print(f"  - {_site_from_script(script)}: {script.name}")
+    for kind, name in tasks:
+        runner = "scrapy" if kind == "scrapy" else "legacy script"
+        print(f"  - {name} ({runner})")
 
     all_ok = True
-    for script in scripts:
-        rc = _run([sys.executable, str(script)], cwd=root, dry_run=args.dry_run)
+    for kind, name in tasks:
+        if kind == "scrapy":
+            cmd = [sys.executable, "-m", "scrapy", "crawl", name]
+            cwd = scrapy_dir
+        else:
+            cmd = [sys.executable, str(legacy_scripts[name])]
+            cwd = root
+        rc = _run(cmd, cwd=cwd, dry_run=args.dry_run)
         if rc != 0:
             all_ok = False
-            print(f"[failed] {_site_from_script(script)} exit_code={rc}")
+            print(f"[failed] {name} exit_code={rc}")
             if not args.continue_on_error:
                 return False
     return all_ok
+
+
+def run_lancedb_build(args: argparse.Namespace, root: Path) -> bool:
+    rc = _run(
+        [sys.executable, str(root / "src" / "build_jobs_lancedb.py")],
+        cwd=root,
+        dry_run=args.dry_run,
+    )
+    return rc == 0
 
 
 def run_analysis(args: argparse.Namespace, root: Path) -> bool:
@@ -125,7 +161,16 @@ def main() -> None:
     ok = True
 
     if not args.skip_crawlers:
-        ok = run_crawlers(args, root) and ok
+        crawl_ok = run_crawlers(args, root)
+        ok = crawl_ok and ok
+        if not crawl_ok and not args.continue_on_error:
+            raise SystemExit(1)
+
+    if not args.skip_lancedb:
+        ldb_ok = run_lancedb_build(args, root)
+        ok = ldb_ok and ok
+        if not ldb_ok and not args.continue_on_error:
+            raise SystemExit(1)
 
     if not args.skip_analysis:
         analysis_ok = run_analysis(args, root)

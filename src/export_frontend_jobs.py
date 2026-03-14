@@ -18,6 +18,7 @@ SEARCH_BLOB_LIMIT = 220
 
 
 def discover_csv_files(data_dir: Path) -> list[Path]:
+    """Discover source CSVs (prefers unified data/jobs.csv)."""
     return discover_job_csv_files(data_dir)
 
 

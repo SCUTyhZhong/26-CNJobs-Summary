@@ -21,7 +21,7 @@ except Exception:
 	jieba = None
 
 def discover_data_files(data_dir: str | Path) -> list[Path]:
-	"""Find all full job CSV files under data directory."""
+	"""Find dataset CSV files (prefers unified jobs.csv)."""
 	return discover_job_csv_files(data_dir)
 
 
@@ -47,7 +47,7 @@ def load_jobs(csv_path: str | Path) -> list[dict[str, Any]]:
 
 
 def load_all_jobs(data_dir: str | Path) -> list[dict[str, Any]]:
-	"""Load jobs from all full datasets."""
+	"""Load jobs from discovered dataset files."""
 	jobs: list[dict[str, Any]] = []
 	for file in discover_data_files(data_dir):
 		jobs.extend(load_jobs(file))

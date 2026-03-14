@@ -1,6 +1,11 @@
 playwright>=1.52.0
+scrapy>=2.11.0
 numpy>=1.26.0
 pandas>=2.2.0
 matplotlib>=3.8.0
 seaborn>=0.13.0
 scikit-learn>=1.5.0
+# API server + vector database (RAG-ready)
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+lancedb>=0.13.0

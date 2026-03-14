@@ -249,11 +249,18 @@ def crawl_range(
     return list(records_by_id.values())
 
 
-def write_jsonl(path: Path, rows: List[Dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+def _load_existing_keys(csv_path: Path) -> set[Tuple[str, str]]:
+    keys: set[Tuple[str, str]] = set()
+    if not csv_path.exists() or csv_path.stat().st_size == 0:
+        return keys
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            c = (row.get("company") or "").strip()
+            j = (row.get("job_id") or "").strip()
+            if c and j:
+                keys.add((c, j))
+    return keys
 
 
 # Ordered columns for CSV output
@@ -278,16 +285,40 @@ _CSV_HEADER = [
 ]
 
 
-def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_CSV_HEADER, extrasaction="ignore")
-        writer.writeheader()
+def append_incremental(csv_path: Path, jsonl_path: Path, rows: List[Dict[str, Any]]) -> Tuple[int, int]:
+    """Append only unseen (company, job_id) rows into unified dataset files."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _load_existing_keys(csv_path)
+    seen_this_run: set[Tuple[str, str]] = set()
+
+    needs_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    written = 0
+    skipped = 0
+
+    with csv_path.open("a", encoding="utf-8", newline="") as csv_fh, jsonl_path.open("a", encoding="utf-8") as jsonl_fh:
+        writer = csv.DictWriter(csv_fh, fieldnames=_CSV_HEADER, extrasaction="ignore")
+        if needs_header:
+            writer.writeheader()
+
         for row in rows:
+            key = ((row.get("company") or "").strip(), (row.get("job_id") or "").strip())
+            if not key[0] or not key[1]:
+                skipped += 1
+                continue
+            if key in existing or key in seen_this_run:
+                skipped += 1
+                continue
+
             output = dict(row)
             output["work_cities"] = "|".join(output.get("work_cities") or [])
             output["tags"] = "|".join(output.get("tags") or [])
             writer.writerow(output)
+
+            jsonl_fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            seen_this_run.add(key)
+            written += 1
+
+    return written, skipped
 
 
 def parse_args() -> argparse.Namespace:
@@ -308,8 +339,8 @@ def parse_args() -> argparse.Namespace:
         choices=["msedge", "chrome", "chromium"],
         help="Browser channel. Use 'chromium' for Playwright bundled browser.",
     )
-    parser.add_argument("--jsonl", type=Path, default=Path("data/bytedance_jobs.jsonl"))
-    parser.add_argument("--csv", type=Path, default=Path("data/bytedance_jobs.csv"))
+    parser.add_argument("--jsonl", type=Path, default=Path("data/jobs.jsonl"))
+    parser.add_argument("--csv", type=Path, default=Path("data/jobs.csv"))
     return parser.parse_args()
 
 
@@ -360,9 +391,11 @@ def main() -> None:
             browser.close()
 
     rows.sort(key=lambda x: x.get("job_id") or "")
-    write_jsonl(args.jsonl, rows)
-    write_csv(args.csv, rows)
-    print(f"\ndone: total_rows={len(rows)}  →  {args.jsonl}  /  {args.csv}")
+    written, skipped = append_incremental(args.csv, args.jsonl, rows)
+    print(
+        f"\ndone: crawled={len(rows)}, written={written}, skipped={skipped}  "
+        f"→ {args.jsonl} / {args.csv}"
+    )
 
 
 if __name__ == "__main__":

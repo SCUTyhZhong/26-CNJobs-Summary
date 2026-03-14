@@ -1,0 +1,28 @@
+# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+
+# Runtime logs
+logs/*.log
+
+# Local generated databases and artifacts
+data/lancedb/
+data/lancedb_meta.json
+
+# Optional local analysis exports
+data/analysis/
+
+# Scrapy runtime cache
+.scrapy/

@@ -8,6 +8,7 @@ const LOADING_REFRESH_INTERVAL = 2;
 const INVITE_STORAGE_KEY = "job-nav-invite-ok";
 const DEFAULT_INVITE_CODES = ["AYOHI2026"];
 const DATA_BASE_CANDIDATES = ["data", "./data", "/data", "web/data", "./web/data", "/web/data"];
+const API_BASE_CANDIDATES = ["/api", "./api", "http://localhost:8000/api", "http://127.0.0.1:8000/api"];
 const FETCH_TIMEOUT_MS = 25000;
 
 function toText(value) {
@@ -31,6 +32,7 @@ const state = {
   currentView: "list",
   analyticsDirty: true,
   dataBaseUrl: "",
+  apiBaseUrl: "",
   chunks: [],
   chunkProgress: {
     loaded: 0,
@@ -151,6 +153,21 @@ function buildDataUrl(relativePath, baseUrl = state.dataBaseUrl) {
   return new URL(relativePath, base).toString();
 }
 
+function candidateApiBaseUrls() {
+  const byLocation = new URL("api/", window.location.href).toString();
+  const candidates = API_BASE_CANDIDATES.map(base => new URL(`${base}/`, window.location.href).toString());
+  if (state.apiBaseUrl) {
+    candidates.unshift(state.apiBaseUrl);
+  }
+  candidates.unshift(byLocation);
+  return uniqueArray(candidates);
+}
+
+function buildApiUrl(relativePath, baseUrl = state.apiBaseUrl) {
+  const base = baseUrl || new URL("api/", window.location.href).toString();
+  return new URL(relativePath, base).toString();
+}
+
 async function fetchJsonFromUrl(url, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -183,6 +200,30 @@ async function fetchJsonWithFallback(relativePath, preferredBase = "") {
   }
 
   throw lastErr || new Error(`Failed to load ${relativePath}`);
+}
+
+async function fetchApiJsonWithFallback(relativePath) {
+  let lastErr = null;
+  const bases = candidateApiBaseUrls();
+  for (const baseUrl of bases) {
+    const url = buildApiUrl(relativePath, baseUrl);
+    try {
+      const payload = await fetchJsonFromUrl(url);
+      state.apiBaseUrl = baseUrl;
+      return payload;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error(`Failed to load API path: ${relativePath}`);
+}
+
+async function loadPayloadFromApi() {
+  const payload = await fetchApiJsonWithFallback("jobs/payload");
+  if (!payload || !Array.isArray(payload.jobs)) {
+    throw new Error("Invalid API payload format");
+  }
+  return payload;
 }
 
 async function resolveDataBaseAndBootstrap() {
@@ -830,6 +871,16 @@ async function init() {
   await bindInviteGate();
 
   try {
+    setLoadState("连接数据库 API");
+    const apiPayload = await loadPayloadFromApi();
+    await initWithJobsPayload(apiPayload);
+    setLoadState("完成(API)");
+    return;
+  } catch (_apiErr) {
+    // Fall back to static files for compatibility.
+  }
+
+  try {
     setLoadState("定位数据目录");
     const bootstrap = await resolveDataBaseAndBootstrap();
 
@@ -863,8 +914,9 @@ async function init() {
       return;
     } catch (_fatal) {
       if (els.results) {
-        const baseHint = state.dataBaseUrl ? `当前检测目录: ${state.dataBaseUrl}` : "未检测到可用 data 目录";
-        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查 data 目录是否可访问（jobs.index.json 或 jobs.json）。<br>${baseHint}</p>`;
+        const apiHint = state.apiBaseUrl ? `API: ${state.apiBaseUrl}` : "API 未检测到可用地址";
+        const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
+        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查数据库 API 或静态 data 目录。<br>${apiHint}<br>${dataHint}</p>`;
       }
       setLoadState("加载失败");
       console.error(err);

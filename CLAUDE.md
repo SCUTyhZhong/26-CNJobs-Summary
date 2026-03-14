@@ -10,7 +10,7 @@
 1. 数据爬取层
 - 职责：从不同招聘站点采集岗位数据，清洗并统一字段后写入 data。
 - 目录：src/*_campus_scraper.py。
-- 输出：data/*_jobs.jsonl 与 data/*_jobs.csv。
+- 输出：统一文件 data/jobs.jsonl 与 data/jobs.csv（增量去重写入）。
 
 2. 数据分析层
 - 职责：对统一岗位数据做统计分析、NLP/ML 分析、求职指导分析，并导出机器可消费结果。
@@ -73,7 +73,7 @@
 - 样本人工 spot check。
 
 5. 并入主流程
-- 输出到 data/<site>_jobs.csv/jsonl。
+- 输出到统一文件 data/jobs.csv/jsonl（通过 company + job_id 去重）。
 - 更新 README 命令说明。
 
 ### 2.3 爬取模块扩展建议
@@ -81,6 +81,16 @@
 - 抽象通用工具层（分页、重试、请求封装、统一日志）。
 - 引入站点配置文件（headers、endpoint、mapping）减少重复代码。
 - 增加增量抓取模式（按 job_id 或 publish_time）。
+
+### 2.4 运行产物管理（必须遵守）
+
+- 以下内容视为本地运行产物，不应提交：
+  - `logs/*.log`
+  - `data/lancedb/`
+  - `data/lancedb_meta.json`
+  - 各类缓存目录（`__pycache__`、`.pytest_cache`、`.mypy_cache`）
+- 统一通过项目根目录 `.gitignore` 控制忽略规则。
+- 如果出现产物污染，优先执行清理再继续开发。
 
 ## 3. 数据分析模块实现总结
 
@@ -230,6 +240,7 @@
 - export_frontend_jobs.py 成功执行。
 - web/data/jobs.index.json 与 chunks 存在。
 - web/data/jobs.json 存在。
+- 本地日志和 LanceDB 产物未纳入提交（符合 `.gitignore` 规则）。
 - 页面显示数据更新时间和数据来源。
 - 关键筛选链路人工验证。
 - 邀请码验证成功后遮罩会消失，且 loadState 会继续进入“定位数据目录 / 加载中 / 完成”。

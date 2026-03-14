@@ -10,6 +10,9 @@ const FETCH_TIMEOUT_MS = 15000;
 const MOBILE_INDEX_TIMEOUT_MS = 5000;
 const MOBILE_CHUNK_TIMEOUT_MS = 7000;
 const MOBILE_INITIAL_CHUNKS = 2;
+const DESKTOP_INITIAL_CHUNKS = 4;
+const MOBILE_CHUNK_CONCURRENCY = 2;
+const DESKTOP_CHUNK_CONCURRENCY = 4;
 const CACHE_KEY = "job-nav-jobs-cache-v1";
 const CACHE_MAX_AGE_MS = 1000 * 60 * 30;
 
@@ -612,7 +615,7 @@ function mergeJobsFromChunks(chunkPayloads) {
 }
 
 async function bootstrapMobileFastScreen() {
-  setLoadState("移动端极速首屏: 加载分片索引");
+  setLoadState("加载分片索引");
   const indexPayload = await fetchJobsIndexStatic();
   const chunks = indexPayload.chunks || [];
   if (!chunks.length) {
@@ -632,27 +635,62 @@ async function bootstrapMobileFastScreen() {
   }
   renderKeywordChips(commonKeywords);
 
-  const initialChunks = chunks.slice(0, Math.min(MOBILE_INITIAL_CHUNKS, chunks.length));
-  setLoadState(`移动端极速首屏: 加载前 ${initialChunks.length} 个分片`);
+  const initialChunkCount = state.isMobile
+    ? Math.min(MOBILE_INITIAL_CHUNKS, chunks.length)
+    : Math.min(DESKTOP_INITIAL_CHUNKS, chunks.length);
+  const initialChunks = chunks.slice(0, initialChunkCount);
+  setLoadState(`加载首屏分片 ${initialChunks.length}/${chunks.length}`);
   const firstBatchPayloads = await Promise.all(
     initialChunks.map(chunk => fetchChunkPayload(chunk.file, state.dataBaseUrl))
   );
+  const allJobs = mergeJobsFromChunks(firstBatchPayloads);
 
   renderPayload({
-    jobs: mergeJobsFromChunks(firstBatchPayloads),
+    jobs: allJobs,
     meta: indexPayload.meta || {}
   }, "首屏分片");
 
-  setLoadState("首屏完成，后台补全全部岗位详情");
-  queueMicrotask(async () => {
-    try {
-      const fullPayload = await fetchJobsPayloadStatic();
-      writePayloadCache(fullPayload, state.dataBaseUrl);
-      renderPayload(fullPayload, "详情已补全");
-    } catch (_err) {
-      setLoadState("首屏完成(详情补全失败，保留分片结果)");
+  const restChunks = chunks.slice(initialChunkCount);
+  if (!restChunks.length) {
+    if (state.isMobile) {
+      writePayloadCache({ jobs: allJobs, meta: indexPayload.meta || {} }, state.dataBaseUrl);
     }
-  });
+    return;
+  }
+
+  setLoadState(`首屏完成，后台加载剩余分片 0/${restChunks.length}`);
+  const queue = [...restChunks];
+  const loadedPayloads = [];
+  const concurrency = state.isMobile ? MOBILE_CHUNK_CONCURRENCY : DESKTOP_CHUNK_CONCURRENCY;
+  let loaded = 0;
+
+  async function worker() {
+    while (queue.length) {
+      const chunk = queue.shift();
+      if (!chunk) return;
+      try {
+        const payload = await fetchChunkPayload(chunk.file, state.dataBaseUrl);
+        loadedPayloads.push(payload);
+      } catch (_err) {
+        // Skip failed chunk and continue remaining chunks.
+      }
+      loaded += 1;
+      if (loaded % 2 === 0 || loaded === restChunks.length) {
+        setLoadState(`后台加载剩余分片 ${loaded}/${restChunks.length}`);
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
+  const mergedJobs = [...allJobs, ...mergeJobsFromChunks(loadedPayloads)];
+  const finalPayload = {
+    jobs: mergedJobs,
+    meta: indexPayload.meta || {}
+  };
+  renderPayload(finalPayload, "全量分片完成");
+  if (state.isMobile) {
+    writePayloadCache(finalPayload, state.dataBaseUrl);
+  }
 }
 
 async function init() {
@@ -665,9 +703,7 @@ async function init() {
       renderPayload(cache, "缓存命中");
       queueMicrotask(async () => {
         try {
-          const fresh = await fetchJobsPayloadStatic();
-          writePayloadCache(fresh, state.dataBaseUrl);
-          renderPayload(fresh, "缓存已刷新");
+          await bootstrapMobileFastScreen();
         } catch (_err) {
           // Keep cached result if refresh fails.
         }
@@ -679,27 +715,31 @@ async function init() {
       await bootstrapMobileFastScreen();
       return;
     } catch (_fastErr) {
-      setLoadState("极速分片失败，回退整包加载");
+      setLoadState("分片失败，回退整包加载");
     }
   }
 
   try {
-    setLoadState("加载静态整包 jobs.json");
-    const payload = await fetchJobsPayloadStatic();
-    renderPayload(payload, "网络加载");
-    if (state.isMobile) {
-      writePayloadCache(payload, state.dataBaseUrl);
-    }
+    await bootstrapMobileFastScreen();
   } catch (err) {
-    if (els.results) {
-      const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
-      const protocolHint = window.location.protocol === "file:"
-        ? "当前是 file:// 打开，浏览器会拦截本地 fetch，请改用本地静态服务器。"
-        : "请检查 web/data/jobs.json 是否可访问。";
-      els.results.innerHTML = `<p class='empty'>数据加载失败，请检查静态 data 目录。<br>${dataHint}<br>${protocolHint}</p>`;
+    try {
+      setLoadState("分片失败，回退整包 jobs.json");
+      const payload = await fetchJobsPayloadStatic();
+      renderPayload(payload, "整包兼容模式");
+      if (state.isMobile) {
+        writePayloadCache(payload, state.dataBaseUrl);
+      }
+    } catch (fallbackErr) {
+      if (els.results) {
+        const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
+        const protocolHint = window.location.protocol === "file:"
+          ? "当前是 file:// 打开，浏览器会拦截本地 fetch，请改用本地静态服务器。"
+          : "请检查 web/data/jobs.index.json 与 chunks 目录是否可访问。";
+        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查静态 data 目录。<br>${dataHint}<br>${protocolHint}</p>`;
+      }
+      setLoadState("加载失败");
+      console.error(err || fallbackErr);
     }
-    setLoadState("加载失败");
-    console.error(err);
   }
 }
 

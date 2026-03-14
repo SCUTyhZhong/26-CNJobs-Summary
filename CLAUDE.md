@@ -18,9 +18,9 @@
 - 输出：data/analysis/*。
 
 3. 前端展示层
-- 职责：招聘信息卡片化展示、联动筛选、关键词搜索、统计分析、渐进加载。
+- 职责：招聘信息卡片化展示、联动筛选、关键词搜索、渐进加载。
 - 目录：web/index.html, web/assets/*, web/data/*。
-- 输入：web/data/jobs.index.json + web/data/chunks/*.json（主），web/data/jobs.json（兼容）。
+- 输入：web/data/jobs.index.json + web/data/chunks/*.json（主），web/data/jobs.json（兜底兼容）。
 
 ## 2. 数据爬取模块实现总结
 
@@ -146,9 +146,8 @@
 - 岗位标题搜索。
 - 职责/要求/加分项关键词搜索。
 - 默认关键词 chips。
-- 统计分析模块（Top 公司/类别/城市/关键词命中）。
 - 性能优化：防抖、预计算搜索字段、分页加载更多。
-- 渐进数据加载：jobs.index.json + chunks。
+- 渐进数据加载：jobs.index.json + full chunks（每片为完整岗位字段）。
 
 ### 4.2 前端如何调用接口/数据
 
@@ -157,10 +156,10 @@
 1. 主路径
 - 读取 web/data/jobs.index.json。
 - 根据 chunks 清单逐片拉取 web/data/chunks/jobs-*.json。
-- 首片优先渲染，后续渐进补齐。
+- 首屏优先渲染前 N 个分片，后续后台补齐剩余分片。
 
 2. 兼容路径
-- 如果 index 不存在，回退 web/data/jobs.json。
+- 仅在 index/chunks 不可用时回退 web/data/jobs.json。
 
 3. 数据目录探测
 - 前端会优先根据 assets/app.js 的脚本路径反推 ../data/。
@@ -178,14 +177,14 @@
 ### 4.3 前端扩展规则
 
 - 新筛选项必须接入联动机制。
-- 新统计卡必须基于 state.filtered 计算。
 - 重计算逻辑尽量复用现有函数，避免多处口径不一致。
 - 保持移动端可用（<940px 布局）。
 - 邀请码/遮罩改动不得阻塞 init() 后续数据加载 Promise；验证成功后必须保证遮罩消失并继续执行数据初始化。
 - 修改前端加载逻辑时，必须同时验证三种场景：
   1. jobs.index.json + chunks 正常存在
-  2. 只有 jobs.json 存在时可回退
+  2. index/chunks 不可用时 jobs.json 可回退
   3. 本地 http.server 启动后可正常访问
+ - GitHub Pages 部署红线：不得在移动端首屏阶段强制请求完整 jobs.json，大包仅可作为兜底路径。
 
 ## 5. 新需求管理与交付流程
 
@@ -240,6 +239,7 @@
 - export_frontend_jobs.py 成功执行。
 - web/data/jobs.index.json 与 chunks 存在。
 - web/data/jobs.json 存在。
+- jobs.index.json 的 chunk_mode 必须为 full（禁止 summary）。
 - 本地日志和 LanceDB 产物未纳入提交（符合 `.gitignore` 规则）。
 - 页面显示数据更新时间和数据来源。
 - 关键筛选链路人工验证。
@@ -316,8 +316,8 @@
 
 3. 前端与体验
 - [ ] 新筛选是否接入联动逻辑
-- [ ] 新增统计是否基于 state.filtered 计算
 - [ ] 移动端布局是否可用
+- [ ] GitHub Pages 下移动端首屏是否未请求 jobs.json 大包（仅 index + 首批 chunks）
 
 4. 运行与性能
 - [ ] 本地命令可跑通（爬取/分析/导出/前端）

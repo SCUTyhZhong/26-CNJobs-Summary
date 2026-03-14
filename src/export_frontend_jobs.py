@@ -9,8 +9,7 @@ from pathlib import Path
 
 from pipeline_utils import discover_job_csv_files
 
-FULL_CHUNK_SIZE = 120
-SEARCH_BLOB_LIMIT = 220
+FULL_CHUNK_SIZE = 360
 
 
 def discover_csv_files(data_dir: Path) -> list[Path]:
@@ -57,24 +56,8 @@ def compact_text(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip())
 
 
-def build_search_blob(job: dict) -> str:
-    text = " ".join(
-        [
-            compact_text(job.get("title", "")),
-            compact_text(job.get("responsibilities", "")),
-            compact_text(job.get("requirements", "")),
-            compact_text(job.get("bonus_points", "")),
-        ]
-    )
-    if len(text) <= SEARCH_BLOB_LIMIT:
-        return text
-    return f"{text[:SEARCH_BLOB_LIMIT].rstrip()}..."
-
-
 def build_full_chunk_job(job: dict) -> dict:
-    merged = dict(job)
-    merged["search_blob"] = build_search_blob(job)
-    return merged
+    return dict(job)
 
 
 def export_jobs_json(data_dir: Path, output_file: Path) -> None:

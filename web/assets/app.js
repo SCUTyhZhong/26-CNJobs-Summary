@@ -15,7 +15,7 @@ const MOBILE_CHUNK_CONCURRENCY = 2;
 const DESKTOP_CHUNK_CONCURRENCY = 4;
 const PROGRESSIVE_RENDER_STEP_MOBILE = 3;
 const PROGRESSIVE_RENDER_STEP_DESKTOP = 5;
-const CACHE_KEY = "job-nav-jobs-cache-v1";
+const CACHE_KEY = "job-nav-jobs-cache-v2";
 const CACHE_MAX_AGE_MS = 1000 * 60 * 30;
 
 function isMobileClient() {

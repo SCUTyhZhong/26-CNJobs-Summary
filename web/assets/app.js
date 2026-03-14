@@ -7,6 +7,9 @@ const PAGE_SIZE_MOBILE = 10;
 const INVITE_STORAGE_KEY = "job-nav-invite-ok";
 const DEFAULT_INVITE_CODES = ["AYOHI2026"];
 const FETCH_TIMEOUT_MS = 15000;
+const MOBILE_INDEX_TIMEOUT_MS = 5000;
+const MOBILE_CHUNK_TIMEOUT_MS = 7000;
+const MOBILE_INITIAL_CHUNKS = 2;
 const CACHE_KEY = "job-nav-jobs-cache-v1";
 const CACHE_MAX_AGE_MS = 1000 * 60 * 30;
 
@@ -125,6 +128,25 @@ function buildDataUrl(relativePath, baseUrl = state.dataBaseUrl) {
   return new URL(relativePath, base).toString();
 }
 
+async function fetchDataJsonWithFallback(relativePath, timeoutMs = FETCH_TIMEOUT_MS, preferredBase = "") {
+  let lastErr = null;
+  const bases = preferredBase
+    ? [...new Set([preferredBase, ...candidateBaseUrls()])]
+    : candidateBaseUrls();
+
+  for (const baseUrl of bases) {
+    try {
+      const payload = await fetchJsonFromUrl(buildDataUrl(relativePath, baseUrl), timeoutMs);
+      state.dataBaseUrl = baseUrl;
+      return payload;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error(`Failed to load ${relativePath}`);
+}
+
 async function fetchJsonFromUrl(url, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -140,22 +162,21 @@ async function fetchJsonFromUrl(url, timeoutMs = FETCH_TIMEOUT_MS) {
 }
 
 async function fetchJobsPayloadStatic() {
-  let lastErr = null;
-  const bases = candidateBaseUrls();
+  const payload = await fetchDataJsonWithFallback("jobs.json", FETCH_TIMEOUT_MS);
+  return payload;
+}
 
-  for (const baseUrl of bases) {
-    try {
-      const pathHint = new URL(baseUrl).pathname || baseUrl;
-      setLoadState(`加载静态整包: ${pathHint}`);
-      const payload = await fetchJsonFromUrl(buildDataUrl("jobs.json", baseUrl));
-      state.dataBaseUrl = baseUrl;
-      return payload;
-    } catch (err) {
-      lastErr = err;
-    }
+async function fetchJobsIndexStatic() {
+  const payload = await fetchDataJsonWithFallback("jobs.index.json", MOBILE_INDEX_TIMEOUT_MS);
+  if (!payload || !Array.isArray(payload.chunks)) {
+    throw new Error("Invalid jobs.index.json payload");
   }
+  return payload;
+}
 
-  throw lastErr || new Error("jobs.json not found");
+async function fetchChunkPayload(chunkFile, preferredBase = "") {
+  const payload = await fetchDataJsonWithFallback(chunkFile, MOBILE_CHUNK_TIMEOUT_MS, preferredBase);
+  return payload;
 }
 
 function preprocessJobs(jobs) {
@@ -580,6 +601,60 @@ function renderPayload(payload, sourceLabel = "") {
   setLoadState(sourceLabel ? `完成(${mode} | ${sourceLabel})` : `完成(${mode})`);
 }
 
+function mergeJobsFromChunks(chunkPayloads) {
+  const all = [];
+  chunkPayloads.forEach(payload => {
+    if (payload && Array.isArray(payload.jobs)) {
+      all.push(...payload.jobs);
+    }
+  });
+  return all;
+}
+
+async function bootstrapMobileFastScreen() {
+  setLoadState("移动端极速首屏: 加载分片索引");
+  const indexPayload = await fetchJobsIndexStatic();
+  const chunks = indexPayload.chunks || [];
+  if (!chunks.length) {
+    throw new Error("No chunks in index payload");
+  }
+
+  const commonKeywords = indexPayload.meta?.common_keywords?.length
+    ? indexPayload.meta.common_keywords
+    : FALLBACK_KEYWORDS;
+
+  state.commonKeywords = commonKeywords;
+  if (els.statTotal) {
+    els.statTotal.textContent = String(indexPayload.meta?.total_jobs || 0);
+  }
+  if (els.dataUpdated) {
+    els.dataUpdated.textContent = indexPayload.meta?.generated_at || "-";
+  }
+  renderKeywordChips(commonKeywords);
+
+  const initialChunks = chunks.slice(0, Math.min(MOBILE_INITIAL_CHUNKS, chunks.length));
+  setLoadState(`移动端极速首屏: 加载前 ${initialChunks.length} 个分片`);
+  const firstBatchPayloads = await Promise.all(
+    initialChunks.map(chunk => fetchChunkPayload(chunk.file, state.dataBaseUrl))
+  );
+
+  renderPayload({
+    jobs: mergeJobsFromChunks(firstBatchPayloads),
+    meta: indexPayload.meta || {}
+  }, "首屏分片");
+
+  setLoadState("首屏完成，后台补全全部岗位详情");
+  queueMicrotask(async () => {
+    try {
+      const fullPayload = await fetchJobsPayloadStatic();
+      writePayloadCache(fullPayload, state.dataBaseUrl);
+      renderPayload(fullPayload, "详情已补全");
+    } catch (_err) {
+      setLoadState("首屏完成(详情补全失败，保留分片结果)");
+    }
+  });
+}
+
 async function init() {
   await bindInviteGate();
   bindEvents();
@@ -598,6 +673,13 @@ async function init() {
         }
       });
       return;
+    }
+
+    try {
+      await bootstrapMobileFastScreen();
+      return;
+    } catch (_fastErr) {
+      setLoadState("极速分片失败，回退整包加载");
     }
   }
 

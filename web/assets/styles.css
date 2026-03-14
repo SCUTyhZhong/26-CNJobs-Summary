@@ -338,6 +338,17 @@ select {
   padding: 14px;
   box-shadow: 0 8px 18px rgba(17, 36, 67, 0.07);
   animation: rise .18s ease-out;
+  cursor: pointer;
+}
+
+.card:focus-visible {
+  outline: 2px solid rgba(33, 48, 74, 0.35);
+  outline-offset: 2px;
+}
+
+.card-expanded {
+  border-color: rgba(33, 48, 74, 0.45);
+  box-shadow: 0 10px 24px rgba(17, 36, 67, 0.13);
 }
 
 @keyframes rise {
@@ -360,6 +371,12 @@ select {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.card-toggle-hint {
+  margin-top: 4px;
+  color: #7a5e31;
+  font-size: 12px;
 }
 
 .detail-link {

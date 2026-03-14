@@ -15,6 +15,12 @@ const DEFAULT_INVITE_CODES = ["AYOHI2026"];
 const DATA_BASE_CANDIDATES = ["data", "./data", "/data", "web/data", "./web/data", "/web/data"];
 const API_BASE_CANDIDATES = ["/api", "./api", "http://localhost:8000/api", "http://127.0.0.1:8000/api"];
 const FETCH_TIMEOUT_MS = 25000;
+const MOBILE_API_PROBE_TIMEOUT_MS = 3000;
+const MOBILE_INDEX_PROBE_TIMEOUT_MS = 3200;
+const MOBILE_JOBS_PROBE_TIMEOUT_MS = 4500;
+const DESKTOP_API_PROBE_TIMEOUT_MS = 7000;
+const DESKTOP_INDEX_PROBE_TIMEOUT_MS = 9000;
+const DESKTOP_JOBS_PROBE_TIMEOUT_MS = 12000;
 
 function isMobileClient() {
   return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
@@ -135,6 +141,15 @@ function uniqueArray(items) {
   return [...new Set(items)];
 }
 
+function isLocalhostLike(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch (_err) {
+    return false;
+  }
+}
+
 function scriptDerivedDataBaseUrl() {
   const script = document.querySelector('script[src*="assets/app.js"]');
   const src = script?.getAttribute("src") || "";
@@ -157,7 +172,11 @@ function candidateBaseUrls() {
   if (state.dataBaseUrl) {
     candidates.unshift(state.dataBaseUrl);
   }
-  return uniqueArray(candidates);
+
+  const uniq = uniqueArray(candidates);
+  const likely = uniq.filter(url => /\/data\/$/i.test(url));
+  const lessLikely = uniq.filter(url => !/\/data\/$/i.test(url));
+  return [...likely, ...lessLikely];
 }
 
 function buildDataUrl(relativePath, baseUrl = state.dataBaseUrl) {
@@ -172,7 +191,12 @@ function candidateApiBaseUrls() {
     candidates.unshift(state.apiBaseUrl);
   }
   candidates.unshift(byLocation);
-  return uniqueArray(candidates);
+
+  const uniq = uniqueArray(candidates);
+  if (state.isMobile) {
+    return uniq.filter(url => !isLocalhostLike(url));
+  }
+  return uniq;
 }
 
 function buildApiUrl(relativePath, baseUrl = state.apiBaseUrl) {
@@ -217,10 +241,12 @@ async function fetchJsonWithFallback(relativePath, preferredBase = "") {
 async function fetchApiJsonWithFallback(relativePath) {
   let lastErr = null;
   const bases = candidateApiBaseUrls();
+  const timeoutMs = state.isMobile ? MOBILE_API_PROBE_TIMEOUT_MS : DESKTOP_API_PROBE_TIMEOUT_MS;
   for (const baseUrl of bases) {
     const url = buildApiUrl(relativePath, baseUrl);
     try {
-      const payload = await fetchJsonFromUrl(url);
+      setLoadState(`探测 API: ${new URL(url).host || url}`);
+      const payload = await fetchJsonFromUrl(url, timeoutMs);
       state.apiBaseUrl = baseUrl;
       return payload;
     } catch (err) {
@@ -241,15 +267,19 @@ async function loadPayloadFromApi() {
 async function resolveDataBaseAndBootstrap() {
   const bases = candidateBaseUrls();
   let lastErr = null;
+  const indexTimeout = state.isMobile ? MOBILE_INDEX_PROBE_TIMEOUT_MS : DESKTOP_INDEX_PROBE_TIMEOUT_MS;
+  const jobsTimeout = state.isMobile ? MOBILE_JOBS_PROBE_TIMEOUT_MS : DESKTOP_JOBS_PROBE_TIMEOUT_MS;
 
   for (const baseUrl of bases) {
     try {
-      const indexPayload = await fetchJsonFromUrl(buildDataUrl("jobs.index.json", baseUrl), 15000);
+      setLoadState(`定位数据目录(索引): ${new URL(baseUrl).pathname}`);
+      const indexPayload = await fetchJsonFromUrl(buildDataUrl("jobs.index.json", baseUrl), indexTimeout);
       state.dataBaseUrl = baseUrl;
       return { baseUrl, indexPayload, jobsPayload: null };
     } catch (indexErr) {
       try {
-        const jobsPayload = await fetchJsonFromUrl(buildDataUrl("jobs.json", baseUrl), 25000);
+        setLoadState(`定位数据目录(整包): ${new URL(baseUrl).pathname}`);
+        const jobsPayload = await fetchJsonFromUrl(buildDataUrl("jobs.json", baseUrl), jobsTimeout);
         state.dataBaseUrl = baseUrl;
         return { baseUrl, indexPayload: null, jobsPayload };
       } catch (jobsErr) {
@@ -1042,7 +1072,10 @@ async function init() {
       if (els.results) {
         const apiHint = state.apiBaseUrl ? `API: ${state.apiBaseUrl}` : "API 未检测到可用地址";
         const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
-        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查数据库 API 或静态 data 目录。<br>${apiHint}<br>${dataHint}</p>`;
+        const protocolHint = window.location.protocol === "file:"
+          ? "当前是 file:// 打开，浏览器会拦截本地 fetch，请改用本地静态服务器。"
+          : "请检查 web/data/jobs.index.json 与 web/data/jobs.json 是否可访问。";
+        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查数据库 API 或静态 data 目录。<br>${apiHint}<br>${dataHint}<br>${protocolHint}</p>`;
       }
       setLoadState("加载失败");
       console.error(err);

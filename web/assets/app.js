@@ -6,7 +6,6 @@ const PAGE_SIZE_DESKTOP = 36;
 const PAGE_SIZE_MOBILE = 12;
 const CHUNK_FETCH_RETRIES = 1;
 const LOADING_REFRESH_INTERVAL = 2;
-const MOBILE_BACKGROUND_START_DELAY_MS = 2200;
 const MOBILE_RESP_MAX = 120;
 const MOBILE_REQ_MAX = 120;
 const MOBILE_BONUS_MAX = 90;
@@ -18,6 +17,7 @@ const FETCH_TIMEOUT_MS = 25000;
 const MOBILE_API_PROBE_TIMEOUT_MS = 3000;
 const MOBILE_INDEX_PROBE_TIMEOUT_MS = 3200;
 const MOBILE_JOBS_PROBE_TIMEOUT_MS = 4500;
+const MOBILE_CHUNK_FETCH_TIMEOUT_MS = 7000;
 const DESKTOP_API_PROBE_TIMEOUT_MS = 7000;
 const DESKTOP_INDEX_PROBE_TIMEOUT_MS = 9000;
 const DESKTOP_JOBS_PROBE_TIMEOUT_MS = 12000;
@@ -45,7 +45,6 @@ const state = {
   visibleCount: 0,
   pageSize: isMobileClient() ? PAGE_SIZE_MOBILE : PAGE_SIZE_DESKTOP,
   isMobile: isMobileClient(),
-  expandedCardKeys: new Set(),
   commonKeywords: FALLBACK_KEYWORDS,
   currentView: "list",
   analyticsDirty: true,
@@ -109,6 +108,8 @@ const els = {
   chartKeyword: document.getElementById("chartKeyword")
 };
 
+let modalEls = null;
+
 function uniqSorted(values) {
   return [...new Set(values.map(toText).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 }
@@ -165,6 +166,7 @@ function scriptDerivedDataBaseUrl() {
 
 function candidateBaseUrls() {
   const scriptBase = scriptDerivedDataBaseUrl();
+  const byLocationData = new URL("data/", window.location.href).toString();
   const candidates = DATA_BASE_CANDIDATES.map(base => new URL(`${base}/`, window.location.href).toString());
   if (scriptBase) {
     candidates.unshift(scriptBase);
@@ -173,7 +175,17 @@ function candidateBaseUrls() {
     candidates.unshift(state.dataBaseUrl);
   }
 
+  candidates.unshift(byLocationData);
+
   const uniq = uniqueArray(candidates);
+  if (state.isMobile) {
+    const fastPick = [];
+    if (state.dataBaseUrl) fastPick.push(state.dataBaseUrl);
+    if (scriptBase) fastPick.push(scriptBase);
+    fastPick.push(byLocationData);
+    return uniqueArray(fastPick);
+  }
+
   const likely = uniq.filter(url => /\/data\/$/i.test(url));
   const lessLikely = uniq.filter(url => !/\/data\/$/i.test(url));
   return [...likely, ...lessLikely];
@@ -293,14 +305,16 @@ async function resolveDataBaseAndBootstrap() {
 
 function detectChunkConcurrency() {
   const net = navigator.connection?.effectiveType || "";
+  const downlink = Number(navigator.connection?.downlink || 0);
   if (net.includes("2g") || net === "slow-2g") return 1;
-  if (state.isMobile || net.includes("3g")) return 1;
+  if (net.includes("3g") || downlink > 0 && downlink < 1.2) return state.isMobile ? 2 : 1;
+  if (state.isMobile) return 3;
   return 3;
 }
 
 function detectInitialChunkCount(totalChunks) {
   if (totalChunks <= 1) return totalChunks;
-  return state.isMobile ? 1 : Math.min(4, totalChunks);
+  return state.isMobile ? Math.min(2, totalChunks) : Math.min(4, totalChunks);
 }
 
 function queueIdle(task) {
@@ -459,14 +473,105 @@ function cardTags(job) {
   return state.isMobile ? tags.slice(0, 2) : tags;
 }
 
-function toggleCardExpansion(cardKey) {
-  if (!cardKey) return;
-  if (state.expandedCardKeys.has(cardKey)) {
-    state.expandedCardKeys.delete(cardKey);
+function ensureJobModal() {
+  if (modalEls?.root) return modalEls;
+
+  const root = document.createElement("div");
+  root.className = "job-modal hidden";
+  root.setAttribute("aria-hidden", "true");
+  root.innerHTML = `
+    <div class="job-modal-backdrop" data-close="1"></div>
+    <section class="job-modal-panel" role="dialog" aria-modal="true" aria-labelledby="jobModalTitle">
+      <button class="job-modal-close" type="button" aria-label="关闭">关闭</button>
+      <header class="job-modal-head">
+        <h3 id="jobModalTitle"></h3>
+        <p class="job-modal-sub"></p>
+      </header>
+      <div class="job-modal-content"></div>
+    </section>
+  `;
+
+  document.body.appendChild(root);
+
+  const close = () => {
+    root.classList.add("hidden");
+    root.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("modal-open");
+  };
+
+  root.addEventListener("click", evt => {
+    if (evt.target.closest("[data-close='1']") || evt.target.closest(".job-modal-close")) {
+      close();
+    }
+  });
+
+  document.addEventListener("keydown", evt => {
+    if (evt.key === "Escape" && !root.classList.contains("hidden")) {
+      close();
+    }
+  });
+
+  modalEls = {
+    root,
+    close,
+    title: root.querySelector("#jobModalTitle"),
+    sub: root.querySelector(".job-modal-sub"),
+    content: root.querySelector(".job-modal-content")
+  };
+
+  return modalEls;
+}
+
+function appendDetailBlock(container, label, value, isLink = false) {
+  const block = document.createElement("section");
+  block.className = "job-modal-block";
+
+  const title = document.createElement("h4");
+  title.textContent = label;
+  block.appendChild(title);
+
+  if (isLink && value && value !== "暂无") {
+    const link = document.createElement("a");
+    link.href = value;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = value;
+    block.appendChild(link);
   } else {
-    state.expandedCardKeys.add(cardKey);
+    const p = document.createElement("p");
+    p.textContent = toText(value) || "暂无";
+    block.appendChild(p);
   }
-  renderCards();
+
+  container.appendChild(block);
+}
+
+function openJobModal(job) {
+  const modal = ensureJobModal();
+  modal.content.innerHTML = "";
+
+  modal.title.textContent = toText(job.title) || "未命名岗位";
+  modal.sub.textContent = [toText(job.company), toText(job.recruit_type), toText(job.work_city)].filter(Boolean).join(" | ") || "-";
+
+  appendDetailBlock(modal.content, "公司", job.company);
+  appendDetailBlock(modal.content, "岗位 ID", job.job_id);
+  appendDetailBlock(modal.content, "招聘项目", job.recruit_type);
+  appendDetailBlock(modal.content, "岗位类别", job.job_category);
+  appendDetailBlock(modal.content, "岗位职能", job.job_function);
+  appendDetailBlock(modal.content, "工作城市", job.work_city);
+  appendDetailBlock(modal.content, "工作城市列表", toText(job.work_cities));
+  appendDetailBlock(modal.content, "标签", toText(job.tags));
+  appendDetailBlock(modal.content, "发布时间", job.publish_time);
+  appendDetailBlock(modal.content, "采集时间", job.fetched_at);
+  appendDetailBlock(modal.content, "来源页面", job.source_page);
+  appendDetailBlock(modal.content, "职位链接", job.detail_url, true);
+  appendDetailBlock(modal.content, "岗位职责", job.responsibilities);
+  appendDetailBlock(modal.content, "岗位要求", job.requirements);
+  appendDetailBlock(modal.content, "加分项", job.bonus_points);
+
+  modal.root.classList.remove("hidden");
+  modal.root.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
 }
 
 function renderCards() {
@@ -481,12 +586,8 @@ function renderCards() {
     if (!root) return;
 
     const node = root.cloneNode(true);
-    const isExpanded = state.expandedCardKeys.has(job._cardKey);
-
-    node.classList.toggle("card-expanded", isExpanded);
     node.setAttribute("role", "button");
     node.setAttribute("tabindex", "0");
-    node.setAttribute("aria-expanded", isExpanded ? "true" : "false");
     node.querySelector(".job-title").textContent = job.title || "未命名岗位";
     node.querySelector(".meta-row").textContent = job._metaRow || `${job.company || "未知公司"} | ${job.recruit_type || "未知项目"} | ${job.work_city || "未知城市"}`;
 
@@ -499,7 +600,7 @@ function renderCards() {
 
     const toggleHint = document.createElement("p");
     toggleHint.className = "card-toggle-hint";
-    toggleHint.textContent = isExpanded ? "点击收起详情" : "点击卡片展开完整信息";
+    toggleHint.textContent = "点击卡片查看完整职位信息";
     node.querySelector(".meta-row")?.insertAdjacentElement("afterend", toggleHint);
 
     const tagRow = node.querySelector(".tag-row");
@@ -510,32 +611,26 @@ function renderCards() {
       tagRow.appendChild(chip);
     });
 
-    node.querySelector(".responsibilities").textContent = isExpanded
-      ? toText(job.responsibilities) || "暂无"
-      : (state.isMobile
-        ? (job._responsibilitiesShortMobile || trimText(job.responsibilities, MOBILE_RESP_MAX))
-        : (job._responsibilitiesShort || trimText(job.responsibilities, 220)));
-    node.querySelector(".requirements").textContent = isExpanded
-      ? toText(job.requirements) || "暂无"
-      : (state.isMobile
-        ? (job._requirementsShortMobile || trimText(job.requirements, MOBILE_REQ_MAX))
-        : (job._requirementsShort || trimText(job.requirements, 220)));
-    node.querySelector(".bonus").textContent = isExpanded
-      ? (toText(job.bonus_points) || "暂无")
-      : (state.isMobile
-        ? (job._bonusShortMobile || trimText(job.bonus_points, MOBILE_BONUS_MAX))
-        : (job._bonusShort || trimText(job.bonus_points, 160)));
+    node.querySelector(".responsibilities").textContent = state.isMobile
+      ? (job._responsibilitiesShortMobile || trimText(job.responsibilities, MOBILE_RESP_MAX))
+      : (job._responsibilitiesShort || trimText(job.responsibilities, 220));
+    node.querySelector(".requirements").textContent = state.isMobile
+      ? (job._requirementsShortMobile || trimText(job.requirements, MOBILE_REQ_MAX))
+      : (job._requirementsShort || trimText(job.requirements, 220));
+    node.querySelector(".bonus").textContent = state.isMobile
+      ? (job._bonusShortMobile || trimText(job.bonus_points, MOBILE_BONUS_MAX))
+      : (job._bonusShort || trimText(job.bonus_points, 160));
 
     node.addEventListener("click", evt => {
       if (evt.target.closest(".detail-link")) return;
-      toggleCardExpansion(job._cardKey);
+      openJobModal(job);
     });
 
     node.addEventListener("keydown", evt => {
       if (evt.target.closest(".detail-link")) return;
       if (evt.key === "Enter" || evt.key === " ") {
         evt.preventDefault();
-        toggleCardExpansion(job._cardKey);
+        openJobModal(job);
       }
     });
 
@@ -688,7 +783,16 @@ function refreshDuringLoading(force = false) {
 }
 
 async function loadChunkFile(filePath) {
-  const payload = await fetchJsonWithFallback(filePath, state.dataBaseUrl);
+  let payload = null;
+  const directUrl = buildDataUrl(filePath, state.dataBaseUrl);
+  const timeout = state.isMobile ? MOBILE_CHUNK_FETCH_TIMEOUT_MS : FETCH_TIMEOUT_MS;
+
+  try {
+    payload = await fetchJsonFromUrl(directUrl, timeout);
+  } catch (_fastErr) {
+    payload = await fetchJsonWithFallback(filePath, state.dataBaseUrl);
+  }
+
   const jobs = preprocessJobs(payload.jobs || []);
   state.jobs.push(...jobs);
   state.chunkProgress.loaded += 1;
@@ -770,9 +874,6 @@ async function progressiveLoadChunks() {
           refreshDuringLoading();
         }
 
-        if (state.isMobile) {
-          await sleep(24);
-        }
         await sleep(0);
       }
     }
@@ -804,24 +905,13 @@ async function progressiveLoadChunks() {
 
   if (restBatch.length > 0) {
     if (state.isMobile) {
-      setLoadState(`首屏已就绪，剩余 ${restBatch.length} 个分片后台低优先加载`);
-      queueIdle(() => {
-        setTimeout(async () => {
-          try {
-            await processQueue(restBatch, 1, 8);
-            await finalizeProgressiveLoad();
-          } catch (err) {
-            console.error("Mobile background load failed:", err);
-            if (state.chunkProgress.loaded <= initialCount) {
-              await loadWholeDataFallback();
-              setLoadState(`完成(后台加载异常，已切整包 ${state.jobs.length} 条)`);
-            } else {
-              setLoadState(`部分完成 ${state.chunkProgress.loaded}/${state.chunkProgress.total}，后台加载中断`);
-              refreshDuringLoading(true);
-            }
-          }
-        }, MOBILE_BACKGROUND_START_DELAY_MS);
-      });
+      setLoadState(`首屏已就绪，继续高速加载 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
+      try {
+        await processQueue(restBatch, detectChunkConcurrency(), 4);
+      } catch (err) {
+        console.error("Mobile chunk load failed:", err);
+      }
+      await finalizeProgressiveLoad();
       return;
     }
 
@@ -1058,6 +1148,19 @@ async function init() {
       renderKeywordChips(commonKeywords);
       bindEvents();
       switchView("list");
+
+      if (state.isMobile) {
+        try {
+          setLoadState("移动端加速: 优先整包加载");
+          const fullPayload = await fetchJsonWithFallback("jobs.json", bootstrap.baseUrl);
+          await initWithJobsPayload(fullPayload);
+          setLoadState("完成(移动端整包)");
+          return;
+        } catch (_fullErr) {
+          setLoadState("整包失败，切分片高速加载");
+        }
+      }
+
       await progressiveLoadChunks();
       return;
     }

@@ -108,8 +108,6 @@ const els = {
   chartKeyword: document.getElementById("chartKeyword")
 };
 
-let modalEls = null;
-
 function uniqSorted(values) {
   return [...new Set(values.map(toText).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 }
@@ -167,28 +165,12 @@ function scriptDerivedDataBaseUrl() {
 function candidateBaseUrls() {
   const scriptBase = scriptDerivedDataBaseUrl();
   const byLocationData = new URL("data/", window.location.href).toString();
-  const candidates = DATA_BASE_CANDIDATES.map(base => new URL(`${base}/`, window.location.href).toString());
-  if (scriptBase) {
-    candidates.unshift(scriptBase);
-  }
-  if (state.dataBaseUrl) {
-    candidates.unshift(state.dataBaseUrl);
-  }
+  const candidates = [];
+  if (state.dataBaseUrl) candidates.push(state.dataBaseUrl);
+  if (scriptBase) candidates.push(scriptBase);
+  candidates.push(byLocationData);
 
-  candidates.unshift(byLocationData);
-
-  const uniq = uniqueArray(candidates);
-  if (state.isMobile) {
-    const fastPick = [];
-    if (state.dataBaseUrl) fastPick.push(state.dataBaseUrl);
-    if (scriptBase) fastPick.push(scriptBase);
-    fastPick.push(byLocationData);
-    return uniqueArray(fastPick);
-  }
-
-  const likely = uniq.filter(url => /\/data\/$/i.test(url));
-  const lessLikely = uniq.filter(url => !/\/data\/$/i.test(url));
-  return [...likely, ...lessLikely];
+  return uniqueArray(candidates);
 }
 
 function buildDataUrl(relativePath, baseUrl = state.dataBaseUrl) {
@@ -473,107 +455,6 @@ function cardTags(job) {
   return state.isMobile ? tags.slice(0, 2) : tags;
 }
 
-function ensureJobModal() {
-  if (modalEls?.root) return modalEls;
-
-  const root = document.createElement("div");
-  root.className = "job-modal hidden";
-  root.setAttribute("aria-hidden", "true");
-  root.innerHTML = `
-    <div class="job-modal-backdrop" data-close="1"></div>
-    <section class="job-modal-panel" role="dialog" aria-modal="true" aria-labelledby="jobModalTitle">
-      <button class="job-modal-close" type="button" aria-label="关闭">关闭</button>
-      <header class="job-modal-head">
-        <h3 id="jobModalTitle"></h3>
-        <p class="job-modal-sub"></p>
-      </header>
-      <div class="job-modal-content"></div>
-    </section>
-  `;
-
-  document.body.appendChild(root);
-
-  const close = () => {
-    root.classList.add("hidden");
-    root.setAttribute("aria-hidden", "true");
-    document.body.classList.remove("modal-open");
-  };
-
-  root.addEventListener("click", evt => {
-    if (evt.target.closest("[data-close='1']") || evt.target.closest(".job-modal-close")) {
-      close();
-    }
-  });
-
-  document.addEventListener("keydown", evt => {
-    if (evt.key === "Escape" && !root.classList.contains("hidden")) {
-      close();
-    }
-  });
-
-  modalEls = {
-    root,
-    close,
-    title: root.querySelector("#jobModalTitle"),
-    sub: root.querySelector(".job-modal-sub"),
-    content: root.querySelector(".job-modal-content")
-  };
-
-  return modalEls;
-}
-
-function appendDetailBlock(container, label, value, isLink = false) {
-  const block = document.createElement("section");
-  block.className = "job-modal-block";
-
-  const title = document.createElement("h4");
-  title.textContent = label;
-  block.appendChild(title);
-
-  if (isLink && value && value !== "暂无") {
-    const link = document.createElement("a");
-    link.href = value;
-    link.target = "_blank";
-    link.rel = "noopener";
-    link.textContent = value;
-    block.appendChild(link);
-  } else {
-    const p = document.createElement("p");
-    p.textContent = toText(value) || "暂无";
-    block.appendChild(p);
-  }
-
-  container.appendChild(block);
-}
-
-function openJobModal(job) {
-  const modal = ensureJobModal();
-  modal.content.innerHTML = "";
-
-  modal.title.textContent = toText(job.title) || "未命名岗位";
-  modal.sub.textContent = [toText(job.company), toText(job.recruit_type), toText(job.work_city)].filter(Boolean).join(" | ") || "-";
-
-  appendDetailBlock(modal.content, "公司", job.company);
-  appendDetailBlock(modal.content, "岗位 ID", job.job_id);
-  appendDetailBlock(modal.content, "招聘项目", job.recruit_type);
-  appendDetailBlock(modal.content, "岗位类别", job.job_category);
-  appendDetailBlock(modal.content, "岗位职能", job.job_function);
-  appendDetailBlock(modal.content, "工作城市", job.work_city);
-  appendDetailBlock(modal.content, "工作城市列表", toText(job.work_cities));
-  appendDetailBlock(modal.content, "标签", toText(job.tags));
-  appendDetailBlock(modal.content, "发布时间", job.publish_time);
-  appendDetailBlock(modal.content, "采集时间", job.fetched_at);
-  appendDetailBlock(modal.content, "来源页面", job.source_page);
-  appendDetailBlock(modal.content, "职位链接", job.detail_url, true);
-  appendDetailBlock(modal.content, "岗位职责", job.responsibilities);
-  appendDetailBlock(modal.content, "岗位要求", job.requirements);
-  appendDetailBlock(modal.content, "加分项", job.bonus_points);
-
-  modal.root.classList.remove("hidden");
-  modal.root.setAttribute("aria-hidden", "false");
-  document.body.classList.add("modal-open");
-}
-
 function renderCards() {
   if (!els.results || !els.cardTpl || !els.emptyState || !els.loadMore) return;
 
@@ -586,8 +467,6 @@ function renderCards() {
     if (!root) return;
 
     const node = root.cloneNode(true);
-    node.setAttribute("role", "button");
-    node.setAttribute("tabindex", "0");
     node.querySelector(".job-title").textContent = job.title || "未命名岗位";
     node.querySelector(".meta-row").textContent = job._metaRow || `${job.company || "未知公司"} | ${job.recruit_type || "未知项目"} | ${job.work_city || "未知城市"}`;
 
@@ -598,11 +477,6 @@ function renderCards() {
       detailLink.removeAttribute("target");
     }
 
-    const toggleHint = document.createElement("p");
-    toggleHint.className = "card-toggle-hint";
-    toggleHint.textContent = "点击卡片查看完整职位信息";
-    node.querySelector(".meta-row")?.insertAdjacentElement("afterend", toggleHint);
-
     const tagRow = node.querySelector(".tag-row");
     cardTags(job).forEach(tag => {
       const chip = document.createElement("span");
@@ -612,27 +486,29 @@ function renderCards() {
     });
 
     node.querySelector(".responsibilities").textContent = state.isMobile
-      ? (job._responsibilitiesShortMobile || trimText(job.responsibilities, MOBILE_RESP_MAX))
+      ? (toText(job.responsibilities) || "暂无")
       : (job._responsibilitiesShort || trimText(job.responsibilities, 220));
     node.querySelector(".requirements").textContent = state.isMobile
-      ? (job._requirementsShortMobile || trimText(job.requirements, MOBILE_REQ_MAX))
+      ? (toText(job.requirements) || "暂无")
       : (job._requirementsShort || trimText(job.requirements, 220));
     node.querySelector(".bonus").textContent = state.isMobile
-      ? (job._bonusShortMobile || trimText(job.bonus_points, MOBILE_BONUS_MAX))
+      ? (toText(job.bonus_points) || "暂无")
       : (job._bonusShort || trimText(job.bonus_points, 160));
 
-    node.addEventListener("click", evt => {
-      if (evt.target.closest(".detail-link")) return;
-      openJobModal(job);
-    });
-
-    node.addEventListener("keydown", evt => {
-      if (evt.target.closest(".detail-link")) return;
-      if (evt.key === "Enter" || evt.key === " ") {
-        evt.preventDefault();
-        openJobModal(job);
-      }
-    });
+    if (state.isMobile) {
+      const fullInfo = document.createElement("div");
+      fullInfo.className = "mobile-full-info";
+      fullInfo.innerHTML = `
+        <p><strong>岗位 ID：</strong>${toText(job.job_id) || "暂无"}</p>
+        <p><strong>岗位职能：</strong>${toText(job.job_function) || "暂无"}</p>
+        <p><strong>工作城市列表：</strong>${toText(job.work_cities) || "暂无"}</p>
+        <p><strong>标签：</strong>${toText(job.tags) || "暂无"}</p>
+        <p><strong>发布时间：</strong>${toText(job.publish_time) || "暂无"}</p>
+        <p><strong>采集时间：</strong>${toText(job.fetched_at) || "暂无"}</p>
+        <p><strong>来源页面：</strong>${toText(job.source_page) || "暂无"}</p>
+      `;
+      node.appendChild(fullInfo);
+    }
 
     fragment.appendChild(node);
   });
@@ -1116,18 +992,20 @@ async function init() {
   await bindInviteGate();
   state.visibleCount = state.pageSize;
 
-  try {
-    setLoadState("连接数据库 API");
-    const apiPayload = await loadPayloadFromApi();
-    await initWithJobsPayload(apiPayload);
-    setLoadState("完成(API)");
-    return;
-  } catch (_apiErr) {
-    // Fall back to static files for compatibility.
+  if (state.isMobile) {
+    try {
+      setLoadState("移动端直连静态整包");
+      const payload = await fetchJsonWithFallback("jobs.json");
+      await initWithJobsPayload(payload);
+      setLoadState("完成(移动端静态整包)");
+      return;
+    } catch (_mobileFullErr) {
+      setLoadState("整包直连失败，回退索引/分片");
+    }
   }
 
   try {
-    setLoadState("定位数据目录");
+    setLoadState("加载静态数据");
     const bootstrap = await resolveDataBaseAndBootstrap();
 
     if (bootstrap.indexPayload) {
@@ -1173,12 +1051,11 @@ async function init() {
       return;
     } catch (_fatal) {
       if (els.results) {
-        const apiHint = state.apiBaseUrl ? `API: ${state.apiBaseUrl}` : "API 未检测到可用地址";
         const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
         const protocolHint = window.location.protocol === "file:"
           ? "当前是 file:// 打开，浏览器会拦截本地 fetch，请改用本地静态服务器。"
           : "请检查 web/data/jobs.index.json 与 web/data/jobs.json 是否可访问。";
-        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查数据库 API 或静态 data 目录。<br>${apiHint}<br>${dataHint}<br>${protocolHint}</p>`;
+        els.results.innerHTML = `<p class='empty'>数据加载失败，请检查静态 data 目录。<br>${dataHint}<br>${protocolHint}</p>`;
       }
       setLoadState("加载失败");
       console.error(err);

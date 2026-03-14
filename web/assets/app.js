@@ -2,7 +2,8 @@ const FALLBACK_KEYWORDS = [
   "python", "java", "c++", "go", "sql", "机器学习", "深度学习", "推荐", "数据分析", "后端", "前端", "产品"
 ];
 
-const PAGE_SIZE = 36;
+const PAGE_SIZE_DESKTOP = 36;
+const PAGE_SIZE_MOBILE = 18;
 const CHUNK_FETCH_RETRIES = 1;
 const LOADING_REFRESH_INTERVAL = 2;
 const INVITE_STORAGE_KEY = "job-nav-invite-ok";
@@ -10,6 +11,10 @@ const DEFAULT_INVITE_CODES = ["AYOHI2026"];
 const DATA_BASE_CANDIDATES = ["data", "./data", "/data", "web/data", "./web/data", "/web/data"];
 const API_BASE_CANDIDATES = ["/api", "./api", "http://localhost:8000/api", "http://127.0.0.1:8000/api"];
 const FETCH_TIMEOUT_MS = 25000;
+
+function isMobileClient() {
+  return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
+}
 
 function toText(value) {
   if (typeof value === "string") return value;
@@ -27,7 +32,9 @@ const INVITE_CODES = (Array.isArray(window.__INVITE_CODES__) && window.__INVITE_
 const state = {
   jobs: [],
   filtered: [],
-  visibleCount: PAGE_SIZE,
+  visibleCount: 0,
+  pageSize: isMobileClient() ? PAGE_SIZE_MOBILE : PAGE_SIZE_DESKTOP,
+  isMobile: isMobileClient(),
   commonKeywords: FALLBACK_KEYWORDS,
   currentView: "list",
   analyticsDirty: true,
@@ -250,17 +257,15 @@ async function resolveDataBaseAndBootstrap() {
 }
 
 function detectChunkConcurrency() {
-  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
   const net = navigator.connection?.effectiveType || "";
   if (net.includes("2g") || net === "slow-2g") return 1;
-  if (isMobile || net.includes("3g")) return 2;
+  if (state.isMobile || net.includes("3g")) return 1;
   return 3;
 }
 
 function detectInitialChunkCount(totalChunks) {
-  const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
   if (totalChunks <= 1) return totalChunks;
-  return isMobile ? 1 : Math.min(4, totalChunks);
+  return state.isMobile ? 1 : Math.min(4, totalChunks);
 }
 
 function queueIdle(task) {
@@ -304,7 +309,7 @@ function textBlobLower(job) {
 
 function computeFilteredJobs() {
   if (!hasActiveFilters(state.filters)) {
-    return [...state.jobs];
+    return state.jobs;
   }
   return state.jobs.filter(job => matchesFilters(job, state.filters));
 }
@@ -530,7 +535,7 @@ function updateResultCounters() {
 function applyFilters() {
   syncFilterOptions();
   state.filtered = computeFilteredJobs();
-  state.visibleCount = PAGE_SIZE;
+  state.visibleCount = state.pageSize;
 
   if (state.currentView === "list") {
     renderCards();
@@ -557,8 +562,15 @@ function refreshFromCurrentData() {
 }
 
 function refreshDuringLoading(force = false) {
-  state.filtered = computeFilteredJobs();
-  const shouldRender = force || state.chunkProgress.loaded === 1 || state.chunkProgress.loaded % (LOADING_REFRESH_INTERVAL + 2) === 0;
+  const activeFilters = hasActiveFilters(state.filters);
+  if (activeFilters) {
+    state.filtered = computeFilteredJobs();
+  } else {
+    state.filtered = state.jobs;
+  }
+
+  const interval = state.isMobile ? (LOADING_REFRESH_INTERVAL + 5) : (LOADING_REFRESH_INTERVAL + 2);
+  const shouldRender = force || state.chunkProgress.loaded === 1 || state.chunkProgress.loaded % interval === 0;
   if (shouldRender && state.currentView === "list") {
     renderCards();
   } else {
@@ -644,6 +656,9 @@ async function progressiveLoadChunks() {
 
         setLoadState(`加载中 ${state.chunkProgress.loaded}/${state.chunkProgress.total}`);
         refreshDuringLoading();
+        if (state.isMobile) {
+          await sleep(16);
+        }
         await sleep(0);
       }
     }
@@ -840,7 +855,7 @@ function bindEvents() {
 
   if (els.loadMore) {
     els.loadMore.addEventListener("click", () => {
-      state.visibleCount += PAGE_SIZE;
+      state.visibleCount += state.pageSize;
       renderCards();
     });
   }
@@ -861,6 +876,7 @@ async function initWithJobsPayload(payload) {
 
   renderMeta(payload.meta || {});
   renderKeywordChips(commonKeywords);
+  state.visibleCount = state.pageSize;
   bindEvents();
   switchView("list");
   refreshFromCurrentData();
@@ -869,6 +885,7 @@ async function initWithJobsPayload(payload) {
 
 async function init() {
   await bindInviteGate();
+  state.visibleCount = state.pageSize;
 
   try {
     setLoadState("连接数据库 API");

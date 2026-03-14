@@ -13,6 +13,7 @@ const MOBILE_INITIAL_CHUNKS = 2;
 const DESKTOP_INITIAL_CHUNKS = 4;
 const MOBILE_CHUNK_CONCURRENCY = 2;
 const DESKTOP_CHUNK_CONCURRENCY = 4;
+const MOBILE_ALLOW_WHOLE_FALLBACK = false;
 const CACHE_KEY = "job-nav-jobs-cache-v1";
 const CACHE_MAX_AGE_MS = 1000 * 60 * 30;
 
@@ -614,7 +615,45 @@ function mergeJobsFromChunks(chunkPayloads) {
   return all;
 }
 
-async function bootstrapMobileFastScreen() {
+async function fetchInitialChunksSafely(chunks) {
+  if (!chunks.length) {
+    return [];
+  }
+
+  const first = chunks[0];
+  const firstPayload = await fetchChunkPayload(first.file, state.dataBaseUrl);
+  const payloads = [firstPayload];
+
+  if (chunks.length === 1) {
+    return payloads;
+  }
+
+  const restSettled = await Promise.allSettled(
+    chunks.slice(1).map(chunk => fetchChunkPayload(chunk.file, state.dataBaseUrl))
+  );
+
+  restSettled.forEach(item => {
+    if (item.status === "fulfilled" && item.value) {
+      payloads.push(item.value);
+    }
+  });
+
+  return payloads;
+}
+
+function allowWholeFallback() {
+  return !state.isMobile || MOBILE_ALLOW_WHOLE_FALLBACK;
+}
+
+function showChunkOnlyError() {
+  if (els.results) {
+    const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
+    els.results.innerHTML = `<p class='empty'>移动端仅允许分片加载，当前分片不可用。<br>${dataHint}<br>请检查 web/data/jobs.index.json 与 web/data/chunks/*.json。</p>`;
+  }
+  setLoadState("分片加载失败");
+}
+
+async function bootstrapChunkedLoad() {
   setLoadState("加载分片索引");
   const indexPayload = await fetchJobsIndexStatic();
   const chunks = indexPayload.chunks || [];
@@ -622,27 +661,12 @@ async function bootstrapMobileFastScreen() {
     throw new Error("No chunks in index payload");
   }
 
-  const commonKeywords = indexPayload.meta?.common_keywords?.length
-    ? indexPayload.meta.common_keywords
-    : FALLBACK_KEYWORDS;
-
-  state.commonKeywords = commonKeywords;
-  if (els.statTotal) {
-    els.statTotal.textContent = String(indexPayload.meta?.total_jobs || 0);
-  }
-  if (els.dataUpdated) {
-    els.dataUpdated.textContent = indexPayload.meta?.generated_at || "-";
-  }
-  renderKeywordChips(commonKeywords);
-
   const initialChunkCount = state.isMobile
     ? Math.min(MOBILE_INITIAL_CHUNKS, chunks.length)
     : Math.min(DESKTOP_INITIAL_CHUNKS, chunks.length);
   const initialChunks = chunks.slice(0, initialChunkCount);
   setLoadState(`加载首屏分片 ${initialChunks.length}/${chunks.length}`);
-  const firstBatchPayloads = await Promise.all(
-    initialChunks.map(chunk => fetchChunkPayload(chunk.file, state.dataBaseUrl))
-  );
+  const firstBatchPayloads = await fetchInitialChunksSafely(initialChunks);
   const allJobs = mergeJobsFromChunks(firstBatchPayloads);
 
   renderPayload({
@@ -703,25 +727,25 @@ async function init() {
       renderPayload(cache, "缓存命中");
       queueMicrotask(async () => {
         try {
-          await bootstrapMobileFastScreen();
+          await bootstrapChunkedLoad();
         } catch (_err) {
           // Keep cached result if refresh fails.
         }
       });
       return;
     }
-
-    try {
-      await bootstrapMobileFastScreen();
-      return;
-    } catch (_fastErr) {
-      setLoadState("分片失败，回退整包加载");
-    }
   }
 
   try {
-    await bootstrapMobileFastScreen();
+    await bootstrapChunkedLoad();
+    return;
   } catch (err) {
+    if (!allowWholeFallback()) {
+      showChunkOnlyError();
+      console.error(err);
+      return;
+    }
+
     try {
       setLoadState("分片失败，回退整包 jobs.json");
       const payload = await fetchJobsPayloadStatic();

@@ -1,170 +1,245 @@
+#!/usr/bin/env python3
+"""Export frontend payload files from unified jobs dataset.
+
+Outputs:
+- web/data/jobs.json
+- web/data/jobs.index.json
+- web/data/chunks/jobs-*.json
+"""
+
 from __future__ import annotations
 
-import csv
+import argparse
 import json
-import re
-from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-from pipeline_utils import discover_job_csv_files
-
-FULL_CHUNK_SIZE = 360
+from typing import Any
 
 
-def discover_csv_files(data_dir: Path) -> list[Path]:
-    """Discover source CSVs (prefers unified data/jobs.csv)."""
-    return discover_job_csv_files(data_dir)
+REQUIRED_FIELDS = [
+    "company",
+    "job_id",
+    "title",
+    "recruit_type",
+    "job_category",
+    "job_function",
+    "work_city",
+    "work_cities",
+    "responsibilities",
+    "requirements",
+    "bonus_points",
+    "tags",
+    "publish_time",
+    "detail_url",
+    "fetched_at",
+    "source_page",
+]
 
 
-def split_pipe(value: str) -> list[str]:
-    if not value:
+def _ensure_list(value: Any) -> list[str]:
+    if value is None:
         return []
-    return [item.strip() for item in value.split("|") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        if "|" in value:
+            return [s.strip() for s in value.split("|") if s.strip()]
+        return [value.strip()]
+    return [str(value)]
 
 
-def load_rows(path: Path) -> list[dict]:
-    rows = []
-    with path.open("r", encoding="utf-8-sig", newline="") as fp:
-        reader = csv.DictReader(fp)
-        for row in reader:
-            row = {k: (v or "").strip() for k, v in row.items()}
-            rows.append(
-                {
-                    "company": row.get("company", ""),
-                    "job_id": row.get("job_id", ""),
-                    "title": row.get("title", ""),
-                    "recruit_type": row.get("recruit_type", ""),
-                    "job_category": row.get("job_category", ""),
-                    "job_function": row.get("job_function", ""),
-                    "work_city": row.get("work_city", ""),
-                    "work_cities": split_pipe(row.get("work_cities", "")),
-                    "responsibilities": row.get("responsibilities", ""),
-                    "requirements": row.get("requirements", ""),
-                    "bonus_points": row.get("bonus_points", ""),
-                    "tags": split_pipe(row.get("tags", "")),
-                    "publish_time": row.get("publish_time", ""),
-                    "detail_url": row.get("detail_url", ""),
-                    "source_page": row.get("source_page", ""),
-                    "fetched_at": row.get("fetched_at", ""),
-                }
-            )
-    return rows
+def _normalize_record(raw: dict[str, Any]) -> dict[str, Any]:
+    record: dict[str, Any] = {}
+    for field in REQUIRED_FIELDS:
+        value = raw.get(field, "")
+        if field in {"work_cities", "tags"}:
+            record[field] = _ensure_list(value)
+        else:
+            record[field] = "" if value is None else value
+
+    for optional in ("team_intro",):
+        record[optional] = "" if raw.get(optional) is None else raw.get(optional, "")
+
+    text_blob_parts = [
+        record.get("title", ""),
+        record.get("responsibilities", ""),
+        record.get("requirements", ""),
+        record.get("bonus_points", ""),
+    ]
+    record["search_blob"] = " ".join(str(part) for part in text_blob_parts if part).strip()
+    record["search_blob_lower"] = record["search_blob"].lower()
+
+    return record
 
 
-def compact_text(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").strip())
+def _record_key(record: dict[str, Any]) -> tuple[str, str]:
+    company = str(record.get("company", "")).strip()
+    job_id = str(record.get("job_id", "")).strip()
+    detail_url = str(record.get("detail_url", "")).strip()
+    if company and job_id:
+        return (company, job_id)
+    return ("detail_url", detail_url)
 
 
-def build_full_chunk_job(job: dict) -> dict:
-    return dict(job)
+def _sort_time_key(record: dict[str, Any]) -> tuple[str, str]:
+    publish_time = str(record.get("publish_time", ""))
+    fetched_at = str(record.get("fetched_at", ""))
+    return (publish_time, fetched_at)
 
 
-def export_jobs_json(data_dir: Path, output_file: Path) -> None:
-    jobs = []
-    files = discover_csv_files(data_dir)
-    for file in files:
-        jobs.extend(load_rows(file))
-
-    common_keywords = build_common_keywords(jobs, top_n=18)
-    generated_at = datetime.now(timezone.utc).isoformat()
-
-    meta = {
-        "generated_at": generated_at,
-        "total_jobs": len(jobs),
-        "source_files": [f.name for f in files],
-        "common_keywords": common_keywords,
-    }
-
-    payload = {
-        "meta": {
-            **meta,
-        },
-        "jobs": jobs,
-    }
-
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    output_file.write_text(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
-
-    # Progressive-load artifacts for public web hosting.
-    export_chunked_payload(output_file.parent, jobs, meta)
+@dataclass
+class ChunkMeta:
+    name: str
+    count: int
+    start: int
+    end: int
 
 
-def export_chunked_payload(web_data_dir: Path, jobs: list[dict], meta: dict) -> None:
-    chunks_dir = web_data_dir / "chunks"
-    chunks_dir.mkdir(parents=True, exist_ok=True)
+class FrontendExporter:
+    def __init__(self, input_path: Path, output_root: Path, chunk_size: int) -> None:
+        self.input_path = input_path
+        self.output_root = output_root
+        self.chunk_size = max(1, chunk_size)
+        self.output_data_dir = self.output_root / "data"
+        self.chunks_dir = self.output_data_dir / "chunks"
 
-    for stale_file in chunks_dir.glob("jobs-*.json"):
-        stale_file.unlink(missing_ok=True)
+    def run(self) -> dict[str, Any]:
+        records = self._load_records()
+        self._prepare_output_dirs()
 
-    chunk_entries = []
-    full_jobs = [build_full_chunk_job(job) for job in jobs]
-
-    for idx in range(0, len(full_jobs), FULL_CHUNK_SIZE):
-        chunk_jobs = full_jobs[idx : idx + FULL_CHUNK_SIZE]
-        chunk_no = (idx // FULL_CHUNK_SIZE) + 1
-        filename = f"jobs-{chunk_no:03d}.json"
-        path = chunks_dir / filename
-        chunk_payload = {
-            "meta": {
-                "chunk_no": chunk_no,
-                "count": len(chunk_jobs),
-                "mode": "full",
-            },
-            "jobs": chunk_jobs,
-        }
-        path.write_text(
-            json.dumps(chunk_payload, ensure_ascii=False, separators=(",", ":")),
+        jobs_json_path = self.output_data_dir / "jobs.json"
+        jobs_json_path.write_text(
+            json.dumps(records, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
-        chunk_entries.append({"file": f"chunks/{filename}", "count": len(chunk_jobs)})
 
-    index_payload = {
-        "meta": {
-            **meta,
-            "chunk_size": FULL_CHUNK_SIZE,
-            "chunk_count": len(chunk_entries),
+        chunk_metas = self._write_chunks(records)
+        index_path = self.output_data_dir / "jobs.index.json"
+
+        index_payload = {
+            "version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "chunk_mode": "full",
-        },
-        "chunks": chunk_entries,
-    }
-    (web_data_dir / "jobs.index.json").write_text(
-        json.dumps(index_payload, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
+            "chunk_size": self.chunk_size,
+            "total": len(records),
+            "files": {
+                "jobs": "jobs.json",
+                "chunks_dir": "chunks",
+            },
+            "chunks": [
+                {
+                    "file": meta.name,
+                    "count": meta.count,
+                    "start": meta.start,
+                    "end": meta.end,
+                }
+                for meta in chunk_metas
+            ],
+        }
+        index_path.write_text(
+            json.dumps(index_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        return {
+            "total": len(records),
+            "chunks": len(chunk_metas),
+            "jobs_json": str(jobs_json_path),
+            "index_json": str(index_path),
+        }
+
+    def _load_records(self) -> list[dict[str, Any]]:
+        if not self.input_path.exists():
+            raise FileNotFoundError(f"Input file not found: {self.input_path}")
+
+        dedup_map: dict[tuple[str, str], dict[str, Any]] = {}
+        with self.input_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    raw = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                record = _normalize_record(raw)
+                key = _record_key(record)
+                dedup_map[key] = record
+
+        records = list(dedup_map.values())
+        records.sort(key=_sort_time_key, reverse=True)
+        return records
+
+    def _prepare_output_dirs(self) -> None:
+        self.chunks_dir.mkdir(parents=True, exist_ok=True)
+        for file in self.chunks_dir.glob("jobs-*.json"):
+            file.unlink()
+
+    def _write_chunks(self, records: list[dict[str, Any]]) -> list[ChunkMeta]:
+        chunk_metas: list[ChunkMeta] = []
+        if not records:
+            return chunk_metas
+
+        for idx in range(0, len(records), self.chunk_size):
+            chunk_index = idx // self.chunk_size + 1
+            chunk_records = records[idx : idx + self.chunk_size]
+            chunk_name = f"jobs-{chunk_index:04d}.json"
+            chunk_path = self.chunks_dir / chunk_name
+            chunk_path.write_text(
+                json.dumps(chunk_records, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            chunk_metas.append(
+                ChunkMeta(
+                    name=chunk_name,
+                    count=len(chunk_records),
+                    start=idx,
+                    end=idx + len(chunk_records) - 1,
+                )
+            )
+        return chunk_metas
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Export frontend jobs payload")
+    parser.add_argument(
+        "--input",
+        default="data/jobs.jsonl",
+        help="Input jsonl file path (default: data/jobs.jsonl)",
     )
+    parser.add_argument(
+        "--output-root",
+        default="web",
+        help="Frontend web root path (default: web)",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=120,
+        help="Jobs per chunk (default: 120)",
+    )
+    return parser.parse_args()
 
 
-def build_common_keywords(jobs: list[dict], top_n: int = 18) -> list[str]:
-    candidate_keywords = [
-        "python", "java", "c++", "go", "javascript", "typescript", "sql",
-        "机器学习", "深度学习", "推荐", "算法", "数据分析", "后端", "前端",
-        "测试", "产品", "设计", "nlp", "llm", "pytorch", "tensorflow",
-    ]
+def main() -> int:
+    args = parse_args()
+    exporter = FrontendExporter(
+        input_path=Path(args.input),
+        output_root=Path(args.output_root),
+        chunk_size=args.chunk_size,
+    )
+    result = exporter.run()
 
-    counter = Counter()
-    for job in jobs:
-        text = " ".join([
-            job.get("title", ""),
-            job.get("responsibilities", ""),
-            job.get("requirements", ""),
-            job.get("bonus_points", ""),
-        ]).lower()
-        for kw in candidate_keywords:
-            if re.search(re.escape(kw.lower()), text):
-                counter[kw] += 1
-
-    sorted_keywords = [kw for kw, _ in counter.most_common(top_n)]
-    if not sorted_keywords:
-        return candidate_keywords[:12]
-    return sorted_keywords
+    print("Frontend data export completed")
+    print(f"- total jobs: {result['total']}")
+    print(f"- chunk files: {result['chunks']}")
+    print(f"- jobs file: {result['jobs_json']}")
+    print(f"- index file: {result['index_json']}")
+    return 0
 
 
 if __name__ == "__main__":
-    root = Path(__file__).resolve().parents[1]
-    data_dir = root / "data"
-    output_file = root / "web" / "data" / "jobs.json"
-    export_jobs_json(data_dir, output_file)
-    print(f"Exported {output_file}")
+    raise SystemExit(main())

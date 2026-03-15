@@ -1,3 +1,3 @@
-window.__INVITE_CODES__ = [
+window.JOB_NAV_INVITE_CODES = [
   "AYOHI2026"
 ];

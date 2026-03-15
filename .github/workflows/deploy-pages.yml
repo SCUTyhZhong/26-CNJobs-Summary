@@ -30,6 +30,26 @@ jobs:
       - name: Export frontend data
         run: python src/export_frontend_jobs.py
 
+      - name: Verify frontend artifacts
+        run: |
+          test -f web/index.html
+          test -f web/data/jobs.index.json
+          test -f web/data/jobs.json
+          test -d web/data/chunks
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          index_path = Path("web/data/jobs.index.json")
+          payload = json.loads(index_path.read_text(encoding="utf-8"))
+          if payload.get("chunk_mode") != "full":
+              raise SystemExit("chunk_mode must be full")
+          chunks = payload.get("chunks") or []
+          if not chunks:
+              raise SystemExit("chunks list is empty")
+          print(f"verified chunks: {len(chunks)}")
+          PY
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 

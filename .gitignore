@@ -20,6 +20,7 @@ logs/*.log
 # Local generated databases and artifacts
 data/lancedb/
 data/lancedb_meta.json
+web/data/
 
 # Optional local analysis exports
 data/analysis/

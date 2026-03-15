@@ -1,138 +1,114 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Campus Job Navigator</title>
-  <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="assets/styles.css" />
-</head>
-<body>
-  <div class="bg-layer"></div>
-  <section id="inviteGate" class="invite-modal" aria-modal="true" role="dialog">
-    <div class="invite-backdrop"></div>
-    <div class="invite-card">
-      <p class="invite-eyebrow">访问验证</p>
-      <h2>请输入邀请码</h2>
-      <p class="invite-tip">仅授权用户可查看岗位列表与统计分析。</p>
-      <div class="invite-row">
-        <input id="inviteCodeInput" type="password" placeholder="输入邀请码" autocomplete="off" />
-        <button id="inviteSubmit" type="button">进入</button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Campus Job Navigator</title>
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body>
+    <div id="inviteOverlay" class="overlay" aria-hidden="false">
+      <div class="overlay-card">
+        <h1>访问验证</h1>
+        <p>输入邀请码后继续访问岗位导航。</p>
+        <form id="inviteForm" class="invite-form">
+          <input id="inviteInput" type="password" placeholder="请输入邀请码" autocomplete="off" required />
+          <button type="submit">进入</button>
+        </form>
+        <p id="inviteError" class="hint error"></p>
       </div>
-      <p id="inviteError" class="invite-error hidden">邀请码错误，请重试。</p>
-      <p id="inviteSuccess" class="invite-success hidden">邀请码正确，正在进入...</p>
     </div>
-  </section>
 
-  <main class="shell" id="appShell">
-    <header class="hero">
-      <p class="eyebrow">招聘信息集成站</p>
-      <h1>3 月 互联网校招岗位</h1>
-      <p class="subtitle">非商业用途，仅供求职规划</p>
-      <div class="stat-row">
-        <div class="stat-pill"><span id="statTotal">0</span> total jobs</div>
-        <div class="stat-pill"><span id="statFiltered">0</span> filtered</div>
-        <div class="stat-pill"><span id="statShown">0</span> shown</div>
-        <div class="stat-pill"><span id="loadState">准备中</span></div>
-      </div>
-    </header>
+    <div class="bg-gradient"></div>
 
-    <section id="listView" class="view-section">
-      <section class="public-note">
-        <p><strong>声明：</strong>本页面仅用于学习与求职规划，岗位信息来源于公开招聘页面，最终信息请以原招聘官网为准。</p>
-        <p><strong>数据更新时间：</strong><span id="dataUpdated">-</span></p>
-        <p><strong>数据来源：</strong>网易，字节，腾讯，阿里等校招官网</p>
-      </section>
-
-      <section class="filters">
-        <div class="filter-grid">
-          <label>
-            公司
-            <select id="companyFilter">
-              <option value="">全部公司</option>
-            </select>
-          </label>
-
-          <label>
-            招聘项目
-            <select id="projectFilter">
-              <option value="">全部项目</option>
-            </select>
-          </label>
-
-          <label>
-            岗位类别
-            <select id="categoryFilter">
-              <option value="">全部类别</option>
-            </select>
-          </label>
-
-          <label>
-            城市
-            <select id="cityFilter">
-              <option value="">全部城市</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="search-grid">
-          <input id="titleSearch" type="text" placeholder="搜索岗位名，例如：算法 / 后端 / 产品" />
-          <input id="keywordSearch" type="text" placeholder="搜索职责、要求、加分项关键词，例如：python / 推荐 / 数据分析" />
-        </div>
-
-        <div class="keyword-zone">
-          <span class="keyword-label">常见关键词</span>
-          <div id="keywordChips" class="chips"></div>
-        </div>
-
-        <div class="actions-row">
-          <button id="resetFilters" class="ghost-btn" type="button">重置筛选</button>
-        </div>
-      </section>
-
-      <section id="results" class="cards"></section>
-      <p id="emptyState" class="empty hidden">没有匹配结果，试试减少筛选条件或更换关键词。</p>
-
-      <div class="load-more-wrap">
-        <button id="loadMore" class="load-btn hidden" type="button">加载更多</button>
-      </div>
-    </section>
-  </main>
-
-  <template id="jobCardTemplate">
-    <article class="card">
-      <div class="card-head">
+    <main class="page">
+      <header class="hero">
         <div>
-          <h3 class="job-title"></h3>
-          <p class="meta-row"></p>
+          <p class="eyebrow">Job Info Collector</p>
+          <h1>三月校招实习岗位</h1>
+          <p class="subtitle">数据源来自各大招聘官网，禁止商用</p>
         </div>
-        <a class="detail-link" target="_blank" rel="noopener">查看详情</a>
-      </div>
+        <div class="hero-metrics">
+          <div class="metric">
+            <span class="label">当前状态</span>
+            <strong id="loadStateText">准备中</strong>
+          </div>
+          <div class="metric">
+            <span class="label">数据更新时间</span>
+            <strong id="updatedAtText">-</strong>
+          </div>
+          <div class="metric">
+            <span class="label">匹配岗位</span>
+            <strong id="resultCountText">0</strong>
+          </div>
+        </div>
+      </header>
 
-      <div class="tag-row"></div>
+      <section class="toolbar">
+        <div class="search-wrap">
+          <input id="searchInput" type="search" placeholder="搜索岗位标题 / 职责 / 要求 / 加分项" />
+        </div>
 
-      <div class="content-grid">
-        <section>
-          <h4>岗位职责</h4>
-          <p class="responsibilities"></p>
-        </section>
-        <section>
-          <h4>岗位要求</h4>
-          <p class="requirements"></p>
-        </section>
-      </div>
+        <div class="filters-grid">
+          <select id="filterCompany"><option value="">全部公司</option></select>
+          <select id="filterProject"><option value="">全部项目</option></select>
+          <select id="filterCategory"><option value="">全部类别</option></select>
+          <select id="filterCity"><option value="">全部城市</option></select>
+          <select id="sortBy">
+            <option value="publish_time">按发布时间</option>
+            <option value="relevance">按相关度</option>
+          </select>
+          <button id="clearFilters" type="button" class="ghost">清空条件</button>
+        </div>
 
-      <section class="bonus-wrap">
-        <h4>加分项</h4>
-        <p class="bonus"></p>
+        <div class="toolbar-footer">
+          <button id="overviewEntry" type="button" class="chip">数据概览（即将上线）</button>
+          <span class="source-note">数据来源：聚合校招站点，点击卡片可跳转原始岗位。</span>
+        </div>
       </section>
-    </article>
-  </template>
 
-  <script src="config/invite-codes.js"></script>
-  <script src="assets/app.js"></script>
-</body>
+      <section class="status-panel">
+        <p id="statusMessage">正在初始化...</p>
+      </section>
+
+      <section id="listContainer" class="card-list" aria-live="polite"></section>
+
+      <section class="actions">
+        <button id="loadMoreBtn" type="button">加载更多</button>
+      </section>
+    </main>
+
+    <template id="jobCardTpl">
+      <article class="job-card">
+        <header>
+          <h3 class="title"></h3>
+          <a class="detail-link" target="_blank" rel="noreferrer noopener">查看详情</a>
+        </header>
+        <div class="meta-inline">
+          <span class="meta-chip"><span class="meta-label">公司</span><span class="meta-value" data-field="company"></span></span>
+          <span class="meta-chip"><span class="meta-label">项目</span><span class="meta-value" data-field="project"></span></span>
+          <span class="meta-chip"><span class="meta-label">类别</span><span class="meta-value" data-field="category"></span></span>
+          <span class="meta-chip"><span class="meta-label">城市</span><span class="meta-value" data-field="city"></span></span>
+          <span class="meta-chip"><span class="meta-label">发布时间</span><span class="meta-value" data-field="publishTime"></span></span>
+        </div>
+        <div class="detail-sections">
+          <section class="detail-block detail-block-primary">
+            <h4>岗位职责</h4>
+            <p data-field="responsibilities"></p>
+          </section>
+          <section class="detail-block detail-block-primary">
+            <h4>岗位要求</h4>
+            <p data-field="requirements"></p>
+          </section>
+          <section class="detail-block detail-block-full">
+            <h4>加分项</h4>
+            <p data-field="bonusPoints"></p>
+          </section>
+        </div>
+      </article>
+    </template>
+
+    <script src="config/invite-codes.js"></script>
+    <script type="module" src="assets/app.js"></script>
+  </body>
 </html>

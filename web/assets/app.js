@@ -1,750 +1,463 @@
-const FALLBACK_KEYWORDS = [
-  "python", "java", "c++", "go", "sql", "机器学习", "深度学习", "推荐", "数据分析", "后端", "前端", "产品"
-];
-
-const PAGE_SIZE_DESKTOP = 36;
-const PAGE_SIZE_MOBILE = 10;
-const INVITE_STORAGE_KEY = "job-nav-invite-ok";
-const DEFAULT_INVITE_CODES = ["AYOHI2026"];
-const FETCH_TIMEOUT_MS = 15000;
-const MOBILE_INDEX_TIMEOUT_MS = 5000;
-const MOBILE_CHUNK_TIMEOUT_MS = 7000;
-const MOBILE_INITIAL_CHUNKS = 2;
-const DESKTOP_INITIAL_CHUNKS = 4;
-const MOBILE_CHUNK_CONCURRENCY = 2;
-const DESKTOP_CHUNK_CONCURRENCY = 4;
-const PROGRESSIVE_RENDER_STEP_MOBILE = 3;
-const PROGRESSIVE_RENDER_STEP_DESKTOP = 5;
-const CACHE_KEY = "job-nav-jobs-cache-v2";
-const CACHE_MAX_AGE_MS = 1000 * 60 * 30;
-
-function isMobileClient() {
-  return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent || "");
-}
-
-function toText(value) {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.filter(Boolean).join("/");
-  if (value === null || value === undefined) return "";
-  return String(value);
-}
-
-function trimText(text, max = 180) {
-  if (!text) return "暂无";
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}...`;
-}
-
-function uniqSorted(values) {
-  return [...new Set(values.map(toText).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
-}
-
-function debounce(fn, wait) {
-  let timer = null;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), wait);
-  };
-}
-
-function hasActiveFilters(filters) {
-  return Boolean(filters.company || filters.project || filters.category || filters.city || filters.title || filters.keyword);
-}
-
-const INVITE_CODES = (Array.isArray(window.__INVITE_CODES__) && window.__INVITE_CODES__.length
-  ? window.__INVITE_CODES__
-  : DEFAULT_INVITE_CODES)
-  .map(code => toText(code).trim().toLowerCase())
-  .filter(Boolean);
-
 const state = {
-  jobs: [],
-  filtered: [],
+  allJobs: [],
+  filteredJobs: [],
   visibleCount: 0,
-  pageSize: isMobileClient() ? PAGE_SIZE_MOBILE : PAGE_SIZE_DESKTOP,
-  isMobile: isMobileClient(),
-  commonKeywords: FALLBACK_KEYWORDS,
-  dataBaseUrl: "",
+  pageSize: 30,
+  chunkWarmCount: 3,
+  loadState: "准备中",
+  dataRoot: "",
+  useFallback: false,
   filters: {
     company: "",
     project: "",
     category: "",
     city: "",
-    title: "",
-    keyword: ""
-  }
+    query: "",
+    sortBy: "publish_time",
+  },
 };
 
 const els = {
-  inviteGate: document.getElementById("inviteGate"),
-  inviteCodeInput: document.getElementById("inviteCodeInput"),
-  inviteSubmit: document.getElementById("inviteSubmit"),
+  overlay: document.getElementById("inviteOverlay"),
+  inviteForm: document.getElementById("inviteForm"),
+  inviteInput: document.getElementById("inviteInput"),
   inviteError: document.getElementById("inviteError"),
-  inviteSuccess: document.getElementById("inviteSuccess"),
-  statTotal: document.getElementById("statTotal"),
-  statFiltered: document.getElementById("statFiltered"),
-  statShown: document.getElementById("statShown"),
-  loadState: document.getElementById("loadState"),
-  dataUpdated: document.getElementById("dataUpdated"),
-  companyFilter: document.getElementById("companyFilter"),
-  projectFilter: document.getElementById("projectFilter"),
-  categoryFilter: document.getElementById("categoryFilter"),
-  cityFilter: document.getElementById("cityFilter"),
-  titleSearch: document.getElementById("titleSearch"),
-  keywordSearch: document.getElementById("keywordSearch"),
-  keywordChips: document.getElementById("keywordChips"),
-  resetFilters: document.getElementById("resetFilters"),
-  results: document.getElementById("results"),
-  emptyState: document.getElementById("emptyState"),
-  cardTpl: document.getElementById("jobCardTemplate"),
-  loadMore: document.getElementById("loadMore")
+  loadStateText: document.getElementById("loadStateText"),
+  updatedAtText: document.getElementById("updatedAtText"),
+  resultCountText: document.getElementById("resultCountText"),
+  statusMessage: document.getElementById("statusMessage"),
+  searchInput: document.getElementById("searchInput"),
+  filterCompany: document.getElementById("filterCompany"),
+  filterProject: document.getElementById("filterProject"),
+  filterCategory: document.getElementById("filterCategory"),
+  filterCity: document.getElementById("filterCity"),
+  sortBy: document.getElementById("sortBy"),
+  clearFilters: document.getElementById("clearFilters"),
+  listContainer: document.getElementById("listContainer"),
+  loadMoreBtn: document.getElementById("loadMoreBtn"),
+  cardTpl: document.getElementById("jobCardTpl"),
+  overviewEntry: document.getElementById("overviewEntry"),
 };
 
-function setLoadState(text) {
-  if (els.loadState) {
-    els.loadState.textContent = text;
+function setLoadState(nextState, message) {
+  state.loadState = nextState;
+  els.loadStateText.textContent = nextState;
+  if (message) {
+    els.statusMessage.textContent = message;
   }
 }
 
-function scriptDerivedDataBaseUrl() {
-  const script = document.querySelector('script[src*="assets/app.js"]');
-  const src = script?.getAttribute("src") || "";
-  if (!src) return "";
-  try {
-    const full = new URL(src, window.location.href);
-    return new URL("../data/", full).toString();
-  } catch (_err) {
-    return "";
+function getInviteCodes() {
+  const codes = Array.isArray(window.JOB_NAV_INVITE_CODES) ? window.JOB_NAV_INVITE_CODES : [];
+  return codes.map((code) => String(code).trim()).filter(Boolean);
+}
+
+function setupInviteGate(onPass) {
+  const codes = getInviteCodes();
+  if (!codes.length) {
+    els.overlay.classList.add("is-hidden");
+    els.overlay.setAttribute("aria-hidden", "true");
+    onPass();
+    return;
   }
+
+  els.inviteForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const value = els.inviteInput.value.trim();
+    if (codes.includes(value)) {
+      els.inviteError.textContent = "";
+      els.overlay.classList.add("is-hidden");
+      els.overlay.setAttribute("aria-hidden", "true");
+      onPass();
+      return;
+    }
+    els.inviteError.textContent = "邀请码错误，请重试。";
+  });
 }
 
-function candidateBaseUrls() {
-  const byLocationData = new URL("data/", window.location.href).toString();
-  const scriptBase = scriptDerivedDataBaseUrl();
-  const bases = [];
-  if (state.dataBaseUrl) bases.push(state.dataBaseUrl);
-  if (scriptBase) bases.push(scriptBase);
-  bases.push(byLocationData);
-  return [...new Set(bases)];
+async function tryFetchJson(url) {
+  const response = await fetch(url, { cache: "no-cache" });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status} ${url}`);
+  }
+  return response.json();
 }
 
-function buildDataUrl(relativePath, baseUrl = state.dataBaseUrl) {
-  const base = baseUrl || new URL("data/", window.location.href).toString();
-  return new URL(relativePath, base).toString();
+function resolveDataCandidates() {
+  const fromModule = new URL("../data/", import.meta.url).toString();
+  const fromCurrent = new URL("data/", window.location.href).toString();
+  const fromRoot = new URL("/data/", window.location.origin).toString();
+  return [...new Set([fromModule, fromCurrent, fromRoot])];
 }
 
-async function fetchDataJsonWithFallback(relativePath, timeoutMs = FETCH_TIMEOUT_MS, preferredBase = "") {
-  let lastErr = null;
-  const bases = preferredBase
-    ? [...new Set([preferredBase, ...candidateBaseUrls()])]
-    : candidateBaseUrls();
+async function locateDataRoot() {
+  setLoadState("定位数据目录", "正在定位数据目录...");
+  const candidates = resolveDataCandidates();
 
-  for (const baseUrl of bases) {
+  for (const base of candidates) {
     try {
-      const payload = await fetchJsonFromUrl(buildDataUrl(relativePath, baseUrl), timeoutMs);
-      state.dataBaseUrl = baseUrl;
-      return payload;
-    } catch (err) {
-      lastErr = err;
+      await tryFetchJson(new URL("jobs.index.json", base).toString());
+      return base;
+    } catch {
+      // Continue probing.
     }
   }
 
-  throw lastErr || new Error(`Failed to load ${relativePath}`);
-}
-
-async function fetchJsonFromUrl(url, timeoutMs = FETCH_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { signal: controller.signal });
-    if (!resp.ok) {
-      throw new Error(`${url} => ${resp.status}`);
+  for (const base of candidates) {
+    try {
+      await tryFetchJson(new URL("jobs.json", base).toString());
+      return base;
+    } catch {
+      // Continue probing.
     }
-    return await resp.json();
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw new Error("未找到可用数据目录，请确认 web/data 下存在 jobs.index.json 或 jobs.json");
 }
 
-async function fetchJobsIndexStatic() {
-  const payload = await fetchDataJsonWithFallback("jobs.index.json", MOBILE_INDEX_TIMEOUT_MS);
-  if (!payload || !Array.isArray(payload.chunks)) {
-    throw new Error("Invalid jobs.index.json payload");
-  }
-  return payload;
-}
+function normalizeJob(job) {
+  const workCities = Array.isArray(job.work_cities)
+    ? job.work_cities
+    : String(job.work_cities || "")
+        .split("|")
+        .map((x) => x.trim())
+        .filter(Boolean);
+  const tags = Array.isArray(job.tags)
+    ? job.tags
+    : String(job.tags || "")
+        .split("|")
+        .map((x) => x.trim())
+        .filter(Boolean);
 
-async function fetchChunkPayload(chunkFile, preferredBase = "") {
-  const payload = await fetchDataJsonWithFallback(chunkFile, MOBILE_CHUNK_TIMEOUT_MS, preferredBase);
-  return payload;
-}
-
-function preprocessJobs(jobs) {
-  return jobs.map(job => {
-    const normalized = {
-      ...job,
-      company: toText(job.company),
-      recruit_type: toText(job.recruit_type),
-      job_category: toText(job.job_category),
-      job_function: toText(job.job_function),
-      work_city: toText(job.work_city),
-      title: toText(job.title),
-      responsibilities: toText(job.responsibilities),
-      requirements: toText(job.requirements),
-      bonus_points: toText(job.bonus_points),
-      detail_url: toText(job.detail_url),
-      source_page: toText(job.source_page),
-      publish_time: toText(job.publish_time),
-      fetched_at: toText(job.fetched_at),
-      tags: Array.isArray(job.tags) ? job.tags : toText(job.tags).split("/").filter(Boolean),
-      work_cities: Array.isArray(job.work_cities) ? job.work_cities : toText(job.work_cities).split("/").filter(Boolean),
-      search_blob: toText(job.search_blob)
-    };
-
-    normalized._metaRow = `${normalized.company || "未知公司"} | ${normalized.recruit_type || "未知项目"} | ${normalized.work_city || "未知城市"}`;
-    if (!state.isMobile) {
-      normalized._responsibilitiesShort = trimText(normalized.responsibilities, 220);
-      normalized._requirementsShort = trimText(normalized.requirements, 220);
-      normalized._bonusShort = trimText(normalized.bonus_points, 160);
-    }
-    normalized._tags = [normalized.company, normalized.recruit_type, normalized.job_category, normalized.work_city].filter(Boolean);
-    return normalized;
-  });
-}
-
-function titleLower(job) {
-  if (!job._titleLower) {
-    job._titleLower = toText(job.title).toLowerCase();
-  }
-  return job._titleLower;
-}
-
-function textBlobLower(job) {
-  if (!job._textBlobLower) {
-    const source = job.search_blob || `${toText(job.responsibilities)} ${toText(job.requirements)} ${toText(job.bonus_points)}`;
-    job._textBlobLower = source.toLowerCase();
-  }
-  return job._textBlobLower;
-}
-
-function matchesFilters(job, filters, excludeKeys = new Set()) {
-  if (!excludeKeys.has("company") && filters.company && job.company !== filters.company) return false;
-  if (!excludeKeys.has("project") && filters.project && job.recruit_type !== filters.project) return false;
-  if (!excludeKeys.has("category") && filters.category && job.job_category !== filters.category) return false;
-  if (!excludeKeys.has("city") && filters.city && job.work_city !== filters.city) return false;
-  if (!excludeKeys.has("title") && filters.title && !titleLower(job).includes(filters.title.toLowerCase())) return false;
-  if (!excludeKeys.has("keyword") && filters.keyword && !textBlobLower(job).includes(filters.keyword.toLowerCase())) return false;
-  return true;
-}
-
-function computeFilteredJobs() {
-  if (!hasActiveFilters(state.filters)) {
-    return state.jobs;
-  }
-  return state.jobs.filter(job => matchesFilters(job, state.filters));
-}
-
-function populateSelect(selectEl, values, selectedValue = "") {
-  if (!selectEl) return "";
-  const first = selectEl.options[0];
-  selectEl.innerHTML = "";
-  if (first) selectEl.appendChild(first);
-
-  values.forEach(v => {
-    const opt = document.createElement("option");
-    opt.value = v;
-    opt.textContent = v;
-    selectEl.appendChild(opt);
-  });
-
-  const next = values.includes(selectedValue) ? selectedValue : "";
-  selectEl.value = next;
-  return next;
-}
-
-function candidateRows(excludeKey) {
-  return state.jobs.filter(job => matchesFilters(job, state.filters, new Set([excludeKey])));
-}
-
-function syncFilterOptions() {
-  const companyRows = candidateRows("company");
-  const projectRows = candidateRows("project");
-  const categoryRows = candidateRows("category");
-  const cityRows = candidateRows("city");
-
-  state.filters.company = populateSelect(
-    els.companyFilter,
-    uniqSorted(companyRows.map(j => j.company)),
-    state.filters.company
+  const searchBlob = String(
+    job.search_blob || `${job.title || ""} ${job.responsibilities || ""} ${job.requirements || ""} ${job.bonus_points || ""}`
   );
-  state.filters.project = populateSelect(
-    els.projectFilter,
-    uniqSorted(projectRows.map(j => j.recruit_type)),
-    state.filters.project
-  );
-  state.filters.category = populateSelect(
-    els.categoryFilter,
-    uniqSorted(categoryRows.map(j => j.job_category)),
-    state.filters.category
-  );
-  state.filters.city = populateSelect(
-    els.cityFilter,
-    uniqSorted(cityRows.map(j => j.work_city)),
-    state.filters.city
-  );
+
+  return {
+    ...job,
+    work_cities: workCities,
+    tags,
+    search_blob: searchBlob,
+    search_blob_lower: String(job.search_blob_lower || searchBlob).toLowerCase(),
+    project: String(job.job_function || job.recruit_type || "").trim(),
+  };
 }
 
-function renderKeywordChips(keywords) {
-  if (!els.keywordChips) return;
-  els.keywordChips.innerHTML = "";
-  keywords.forEach(word => {
-    const btn = document.createElement("button");
-    btn.className = "chip";
-    btn.type = "button";
-    btn.textContent = word;
-    btn.addEventListener("click", () => {
-      if (els.keywordSearch) {
-        els.keywordSearch.value = word;
-      }
-      state.filters.keyword = word;
-      applyFilters();
-    });
-    els.keywordChips.appendChild(btn);
-  });
+function pickDetailText(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text || "暂无信息";
 }
 
-function cardTags(job) {
-  if (Array.isArray(job._tags)) {
-    return state.isMobile ? job._tags.slice(0, 2) : job._tags;
+function scoreByRelevance(job, q) {
+  if (!q) return 0;
+  const text = job.search_blob_lower;
+  if (!text) return 0;
+
+  let score = 0;
+  let start = 0;
+  while (true) {
+    const found = text.indexOf(q, start);
+    if (found === -1) break;
+    score += 1;
+    start = found + q.length;
   }
-  const tags = [job.company, job.recruit_type, job.job_category, job.work_city].filter(Boolean);
-  return state.isMobile ? tags.slice(0, 2) : tags;
+  return score;
 }
 
-function renderCards() {
-  if (!els.results || !els.cardTpl || !els.emptyState || !els.loadMore) return;
+function parseTimeOrZero(value) {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : 0;
+}
 
-  const toShow = state.filtered.slice(0, state.visibleCount);
+function updateStatusText(message) {
+  els.statusMessage.textContent = message;
+}
+
+function syncMetrics() {
+  els.resultCountText.textContent = String(state.filteredJobs.length);
+}
+
+function updateLoadMoreButton() {
+  const hasMore = state.visibleCount < state.filteredJobs.length;
+  els.loadMoreBtn.disabled = !hasMore;
+  els.loadMoreBtn.textContent = hasMore ? "加载更多" : "已加载全部";
+}
+
+function renderList(reset = false) {
+  if (reset) {
+    els.listContainer.innerHTML = "";
+    state.visibleCount = Math.min(state.pageSize, state.filteredJobs.length);
+  }
+
   const fragment = document.createDocumentFragment();
-  els.results.innerHTML = "";
+  const jobsToRender = state.filteredJobs.slice(0, state.visibleCount);
 
-  toShow.forEach(job => {
-    const root = els.cardTpl.content.firstElementChild;
-    if (!root) return;
+  for (const job of jobsToRender) {
+    const node = els.cardTpl.content.firstElementChild.cloneNode(true);
+    const titleNode = node.querySelector(".title");
+    const linkNode = node.querySelector(".detail-link");
+    const companyNode = node.querySelector('[data-field="company"]');
+    const projectNode = node.querySelector('[data-field="project"]');
+    const categoryNode = node.querySelector('[data-field="category"]');
+    const cityNode = node.querySelector('[data-field="city"]');
+    const publishTimeNode = node.querySelector('[data-field="publishTime"]');
+    const responsibilitiesNode = node.querySelector('[data-field="responsibilities"]');
+    const requirementsNode = node.querySelector('[data-field="requirements"]');
+    const bonusPointsNode = node.querySelector('[data-field="bonusPoints"]');
 
-    const node = root.cloneNode(true);
-    node.querySelector(".job-title").textContent = job.title || "未命名岗位";
-    node.querySelector(".meta-row").textContent = job._metaRow;
-
-    const detailLink = node.querySelector(".detail-link");
-    detailLink.href = job.detail_url || "#";
-    if (!job.detail_url) {
-      detailLink.textContent = "暂无链接";
-      detailLink.removeAttribute("target");
+    titleNode.textContent = job.title || "未命名岗位";
+    if (job.detail_url) {
+      linkNode.href = job.detail_url;
+    } else {
+      linkNode.removeAttribute("href");
+      linkNode.textContent = "无详情链接";
+      linkNode.style.pointerEvents = "none";
+      linkNode.style.opacity = "0.6";
     }
 
-    const tagRow = node.querySelector(".tag-row");
-    cardTags(job).forEach(tag => {
-      const chip = document.createElement("span");
-      chip.className = "tag";
-      chip.textContent = tag;
-      tagRow.appendChild(chip);
-    });
-
-    node.querySelector(".responsibilities").textContent = state.isMobile
-      ? (toText(job.responsibilities) || "暂无")
-      : (job._responsibilitiesShort || trimText(job.responsibilities, 220));
-
-    node.querySelector(".requirements").textContent = state.isMobile
-      ? (toText(job.requirements) || "暂无")
-      : (job._requirementsShort || trimText(job.requirements, 220));
-
-    node.querySelector(".bonus").textContent = state.isMobile
-      ? (toText(job.bonus_points) || "暂无")
-      : (job._bonusShort || trimText(job.bonus_points, 160));
-
-    if (state.isMobile) {
-      const fullInfo = document.createElement("div");
-      fullInfo.className = "mobile-full-info";
-      fullInfo.innerHTML = `
-        <p><strong>岗位 ID：</strong>${toText(job.job_id) || "暂无"}</p>
-        <p><strong>岗位类别：</strong>${toText(job.job_category) || "暂无"}</p>
-        <p><strong>岗位职能：</strong>${toText(job.job_function) || "暂无"}</p>
-        <p><strong>工作城市列表：</strong>${toText(job.work_cities) || "暂无"}</p>
-        <p><strong>标签：</strong>${toText(job.tags) || "暂无"}</p>
-        <p><strong>发布时间：</strong>${toText(job.publish_time) || "暂无"}</p>
-        <p><strong>采集时间：</strong>${toText(job.fetched_at) || "暂无"}</p>
-        <p><strong>来源页：</strong>${toText(job.source_page) || "暂无"}</p>
-      `;
-      node.appendChild(fullInfo);
-    }
+    companyNode.textContent = job.company || "未知公司";
+    projectNode.textContent = job.project || "未知项目";
+    categoryNode.textContent = job.job_category || "未知类别";
+    cityNode.textContent = job.work_city || (Array.isArray(job.work_cities) ? job.work_cities.join("/") : "未知城市");
+    publishTimeNode.textContent = job.publish_time || "时间未知";
+    responsibilitiesNode.textContent = pickDetailText(job.responsibilities);
+    requirementsNode.textContent = pickDetailText(job.requirements);
+    bonusPointsNode.textContent = pickDetailText(job.bonus_points);
 
     fragment.appendChild(node);
-  });
-
-  els.results.appendChild(fragment);
-  els.emptyState.classList.toggle("hidden", state.filtered.length > 0);
-
-  if (els.statFiltered) {
-    els.statFiltered.textContent = String(state.filtered.length);
-  }
-  if (els.statShown) {
-    els.statShown.textContent = String(Math.min(state.filtered.length, state.visibleCount));
   }
 
-  const canLoadMore = state.filtered.length > state.visibleCount;
-  els.loadMore.classList.toggle("hidden", !canLoadMore);
-  if (canLoadMore) {
-    els.loadMore.textContent = `加载更多 (${toShow.length}/${state.filtered.length})`;
+  els.listContainer.innerHTML = "";
+  els.listContainer.appendChild(fragment);
+  updateLoadMoreButton();
+}
+
+function extractOptions(jobs, key, fallback = "") {
+  const set = new Set();
+  for (const job of jobs) {
+    const value = String(job[key] || fallback).trim();
+    if (value) set.add(value);
   }
+  return [...set].sort((a, b) => a.localeCompare(b, "zh-CN"));
+}
+
+function extractCities(jobs) {
+  const set = new Set();
+  for (const job of jobs) {
+    if (job.work_city) set.add(String(job.work_city).trim());
+    if (Array.isArray(job.work_cities)) {
+      for (const city of job.work_cities) {
+        if (city) set.add(String(city).trim());
+      }
+    }
+  }
+  return [...set].sort((a, b) => a.localeCompare(b, "zh-CN"));
+}
+
+function setSelectOptions(selectEl, options, placeholder) {
+  const currentValue = selectEl.value;
+  const html = [`<option value="">${placeholder}</option>`]
+    .concat(options.map((option) => `<option value="${option}">${option}</option>`))
+    .join("");
+  selectEl.innerHTML = html;
+  if (options.includes(currentValue)) {
+    selectEl.value = currentValue;
+  }
+}
+
+function refreshFilterOptions() {
+  const byCompany = state.allJobs.filter((job) => !state.filters.company || job.company === state.filters.company);
+  const byProject = byCompany.filter((job) => !state.filters.project || job.project === state.filters.project);
+  const byCategory = byProject.filter((job) => !state.filters.category || job.job_category === state.filters.category);
+
+  setSelectOptions(els.filterCompany, extractOptions(state.allJobs, "company"), "全部公司");
+  setSelectOptions(els.filterProject, extractOptions(byCompany, "project"), "全部项目");
+  setSelectOptions(els.filterCategory, extractOptions(byProject, "job_category"), "全部类别");
+  setSelectOptions(els.filterCity, extractCities(byCategory), "全部城市");
 }
 
 function applyFilters() {
-  syncFilterOptions();
-  state.filtered = computeFilteredJobs();
-  state.visibleCount = state.pageSize;
-  renderCards();
+  const query = state.filters.query.trim().toLowerCase();
+
+  const filtered = state.allJobs.filter((job) => {
+    if (state.filters.company && job.company !== state.filters.company) return false;
+    if (state.filters.project && job.project !== state.filters.project) return false;
+    if (state.filters.category && job.job_category !== state.filters.category) return false;
+
+    const cities = new Set([job.work_city, ...(job.work_cities || [])].filter(Boolean));
+    if (state.filters.city && !cities.has(state.filters.city)) return false;
+
+    if (query && !job.search_blob_lower.includes(query)) return false;
+    return true;
+  });
+
+  if (state.filters.sortBy === "relevance") {
+    filtered.sort((a, b) => scoreByRelevance(b, query) - scoreByRelevance(a, query));
+  } else {
+    filtered.sort((a, b) => parseTimeOrZero(b.publish_time) - parseTimeOrZero(a.publish_time));
+  }
+
+  state.filteredJobs = filtered;
+  syncMetrics();
+  renderList(true);
+
+  if (!filtered.length) {
+    updateStatusText("当前筛选条件下没有匹配岗位，请调整筛选或搜索词。");
+  } else {
+    updateStatusText(`已加载 ${state.allJobs.length} 条岗位，当前匹配 ${filtered.length} 条。`);
+  }
 }
 
-function refreshFromCurrentData() {
-  syncFilterOptions();
-  state.filtered = computeFilteredJobs();
-  renderCards();
-}
-
-function refreshDuringChunkLoading() {
-  state.filtered = computeFilteredJobs();
-  renderCards();
+function debounce(fn, wait) {
+  let timer = null;
+  return (...args) => {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), wait);
+  };
 }
 
 function bindEvents() {
-  if (els.companyFilter) {
-    els.companyFilter.addEventListener("change", e => {
-      state.filters.company = e.target.value;
-      applyFilters();
-    });
-  }
+  const debouncedSearch = debounce((value) => {
+    state.filters.query = value;
+    applyFilters();
+  }, 220);
 
-  if (els.projectFilter) {
-    els.projectFilter.addEventListener("change", e => {
-      state.filters.project = e.target.value;
-      applyFilters();
-    });
-  }
+  els.searchInput.addEventListener("input", (event) => {
+    debouncedSearch(event.target.value || "");
+  });
 
-  if (els.categoryFilter) {
-    els.categoryFilter.addEventListener("change", e => {
-      state.filters.category = e.target.value;
-      applyFilters();
-    });
-  }
+  els.filterCompany.addEventListener("change", (event) => {
+    state.filters.company = event.target.value;
+    state.filters.project = "";
+    state.filters.category = "";
+    state.filters.city = "";
+    refreshFilterOptions();
+    applyFilters();
+  });
 
-  if (els.cityFilter) {
-    els.cityFilter.addEventListener("change", e => {
-      state.filters.city = e.target.value;
-      applyFilters();
-    });
-  }
+  els.filterProject.addEventListener("change", (event) => {
+    state.filters.project = event.target.value;
+    state.filters.category = "";
+    state.filters.city = "";
+    refreshFilterOptions();
+    applyFilters();
+  });
 
-  const debouncedApply = debounce(() => applyFilters(), state.isMobile ? 200 : 120);
+  els.filterCategory.addEventListener("change", (event) => {
+    state.filters.category = event.target.value;
+    state.filters.city = "";
+    refreshFilterOptions();
+    applyFilters();
+  });
 
-  if (els.titleSearch) {
-    els.titleSearch.addEventListener("input", e => {
-      state.filters.title = e.target.value.trim();
-      debouncedApply();
-    });
-  }
+  els.filterCity.addEventListener("change", (event) => {
+    state.filters.city = event.target.value;
+    applyFilters();
+  });
 
-  if (els.keywordSearch) {
-    els.keywordSearch.addEventListener("input", e => {
-      state.filters.keyword = e.target.value.trim();
-      debouncedApply();
-    });
-  }
+  els.sortBy.addEventListener("change", (event) => {
+    state.filters.sortBy = event.target.value;
+    applyFilters();
+  });
 
-  if (els.resetFilters) {
-    els.resetFilters.addEventListener("click", () => {
-      state.filters = {
-        company: "",
-        project: "",
-        category: "",
-        city: "",
-        title: "",
-        keyword: ""
-      };
-
-      if (els.companyFilter) els.companyFilter.value = "";
-      if (els.projectFilter) els.projectFilter.value = "";
-      if (els.categoryFilter) els.categoryFilter.value = "";
-      if (els.cityFilter) els.cityFilter.value = "";
-      if (els.titleSearch) els.titleSearch.value = "";
-      if (els.keywordSearch) els.keywordSearch.value = "";
-      applyFilters();
-    });
-  }
-
-  if (els.loadMore) {
-    els.loadMore.addEventListener("click", () => {
-      state.visibleCount += state.pageSize;
-      renderCards();
-    });
-  }
-}
-
-function isInviteCodeValid(rawCode) {
-  const code = toText(rawCode).trim().toLowerCase();
-  if (!code) return false;
-  return INVITE_CODES.includes(code);
-}
-
-function bindInviteGate() {
-  return new Promise(resolve => {
-    let resolved = false;
-
-    const finish = () => {
-      if (resolved) return;
-      resolved = true;
-      resolve();
+  els.clearFilters.addEventListener("click", () => {
+    state.filters = {
+      ...state.filters,
+      company: "",
+      project: "",
+      category: "",
+      city: "",
+      query: "",
+      sortBy: "publish_time",
     };
+    els.searchInput.value = "";
+    els.sortBy.value = "publish_time";
+    refreshFilterOptions();
+    applyFilters();
+  });
 
-    const gateEl = els.inviteGate || document.getElementById("inviteGate");
+  els.loadMoreBtn.addEventListener("click", () => {
+    state.visibleCount = Math.min(state.visibleCount + state.pageSize, state.filteredJobs.length);
+    renderList(false);
+  });
 
-    const openApp = () => {
-      try {
-        if (gateEl) gateEl.classList.add("hidden");
-        sessionStorage.setItem(INVITE_STORAGE_KEY, "1");
-      } finally {
-        finish();
-      }
-    };
-
-    const showInviteError = () => {
-      if (els.inviteSuccess) els.inviteSuccess.classList.add("hidden");
-      if (els.inviteError) els.inviteError.classList.remove("hidden");
-    };
-
-    const showInviteSuccess = () => {
-      if (els.inviteError) els.inviteError.classList.add("hidden");
-      if (els.inviteSuccess) els.inviteSuccess.classList.remove("hidden");
-    };
-
-    if (!els.inviteCodeInput || !els.inviteSubmit) {
-      openApp();
-      return;
-    }
-
-    if (sessionStorage.getItem(INVITE_STORAGE_KEY) === "1") {
-      openApp();
-      return;
-    }
-
-    const submit = () => {
-      const code = els.inviteCodeInput.value;
-      if (isInviteCodeValid(code)) {
-        showInviteSuccess();
-        els.inviteCodeInput.disabled = true;
-        els.inviteSubmit.disabled = true;
-        setTimeout(openApp, 320);
-        return;
-      }
-      showInviteError();
-    };
-
-    els.inviteSubmit.addEventListener("click", submit);
-    els.inviteCodeInput.addEventListener("keydown", e => {
-      if (e.key === "Enter") submit();
-    });
+  els.overviewEntry.addEventListener("click", () => {
+    window.alert("数据概览功能已预留入口，后续版本上线。当前先专注岗位检索与筛选。");
   });
 }
 
-function readPayloadCache() {
-  try {
-    const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.jobs) || typeof parsed.cachedAt !== "number") return null;
-    if (Date.now() - parsed.cachedAt > CACHE_MAX_AGE_MS) return null;
-    return parsed;
-  } catch (_err) {
-    return null;
-  }
-}
+async function loadWithIndex(base) {
+  const index = await tryFetchJson(new URL("jobs.index.json", base).toString());
+  const chunks = Array.isArray(index.chunks) ? index.chunks : [];
+  const files = chunks.map((item) => item.file).filter(Boolean);
 
-function writePayloadCache(payload, sourceUrl) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({
-      jobs: payload.jobs || [],
-      meta: payload.meta || {},
-      sourceUrl: sourceUrl || "",
-      cachedAt: Date.now()
-    }));
-  } catch (_err) {
-    // Ignore quota errors and continue normal flow.
-  }
-}
-
-function renderPayload(payload, sourceLabel = "") {
-  state.jobs = preprocessJobs(payload.jobs || []);
-  state.filtered = [...state.jobs];
-  state.visibleCount = state.pageSize;
-
-  const commonKeywords = payload.meta?.common_keywords?.length
-    ? payload.meta.common_keywords
-    : FALLBACK_KEYWORDS;
-
-  state.commonKeywords = commonKeywords;
-
-  if (els.statTotal) {
-    els.statTotal.textContent = String(payload.meta?.total_jobs || state.jobs.length);
-  }
-  if (els.dataUpdated) {
-    els.dataUpdated.textContent = payload.meta?.generated_at || "-";
-  }
-
-  renderKeywordChips(commonKeywords);
-  refreshFromCurrentData();
-
-  const mode = state.isMobile ? "移动端静态极速" : "静态模式";
-  setLoadState(sourceLabel ? `完成(${mode} | ${sourceLabel})` : `完成(${mode})`);
-}
-
-function mergeJobsFromChunks(chunkPayloads) {
-  const all = [];
-  chunkPayloads.forEach(payload => {
-    if (payload && Array.isArray(payload.jobs)) {
-      all.push(...payload.jobs);
-    }
-  });
-  return all;
-}
-
-async function fetchInitialChunksSafely(chunks) {
-  if (!chunks.length) {
-    return [];
-  }
-
-  const first = chunks[0];
-  const firstPayload = await fetchChunkPayload(first.file, state.dataBaseUrl);
-  const payloads = [firstPayload];
-
-  if (chunks.length === 1) {
-    return payloads;
-  }
-
-  const restSettled = await Promise.allSettled(
-    chunks.slice(1).map(chunk => fetchChunkPayload(chunk.file, state.dataBaseUrl))
+  const warm = files.slice(0, state.chunkWarmCount);
+  const rest = files.slice(state.chunkWarmCount);
+  const warmData = await Promise.all(
+    warm.map((name) => tryFetchJson(new URL(`chunks/${name}`, base).toString()).catch(() => []))
   );
 
-  restSettled.forEach(item => {
-    if (item.status === "fulfilled" && item.value) {
-      payloads.push(item.value);
-    }
-  });
+  state.allJobs = warmData.flat().map(normalizeJob);
+  els.updatedAtText.textContent = index.generated_at || "-";
 
-  return payloads;
-}
+  setLoadState("加载中", `首批分片已加载 (${state.allJobs.length} 条)，正在补齐剩余数据...`);
 
-function showChunkOnlyError() {
-  if (els.results) {
-    const dataHint = state.dataBaseUrl ? `Data: ${state.dataBaseUrl}` : "Data 未检测到可用目录";
-    const sceneHint = state.isMobile ? "移动端" : "当前环境";
-    els.results.innerHTML = `<p class='empty'>${sceneHint}仅允许分片加载，当前分片不可用。<br>${dataHint}<br>请检查 web/data/jobs.index.json 与 web/data/chunks/*.json。</p>`;
-  }
-  setLoadState("分片加载失败");
-}
-
-async function bootstrapChunkedLoad() {
-  setLoadState("加载分片索引");
-  const indexPayload = await fetchJobsIndexStatic();
-  const chunks = indexPayload.chunks || [];
-  if (!chunks.length) {
-    throw new Error("No chunks in index payload");
-  }
-
-  const initialChunkCount = state.isMobile
-    ? Math.min(MOBILE_INITIAL_CHUNKS, chunks.length)
-    : Math.min(DESKTOP_INITIAL_CHUNKS, chunks.length);
-  const initialChunks = chunks.slice(0, initialChunkCount);
-  setLoadState(`加载首屏分片 ${initialChunks.length}/${chunks.length}`);
-  const firstBatchPayloads = await fetchInitialChunksSafely(initialChunks);
-  const allJobs = mergeJobsFromChunks(firstBatchPayloads);
-
-  renderPayload({
-    jobs: allJobs,
-    meta: indexPayload.meta || {}
-  }, "首屏分片");
-
-  const restChunks = chunks.slice(initialChunkCount);
-  if (!restChunks.length) {
-    if (state.isMobile) {
-      writePayloadCache({ jobs: allJobs, meta: indexPayload.meta || {} }, state.dataBaseUrl);
-    }
-    return;
-  }
-
-  setLoadState(`首屏完成，后台加载剩余分片 0/${restChunks.length}`);
-  const queue = [...restChunks];
-  const concurrency = state.isMobile ? MOBILE_CHUNK_CONCURRENCY : DESKTOP_CHUNK_CONCURRENCY;
-  let loaded = 0;
-  const renderStep = state.isMobile ? PROGRESSIVE_RENDER_STEP_MOBILE : PROGRESSIVE_RENDER_STEP_DESKTOP;
-
-  async function worker() {
-    while (queue.length) {
-      const chunk = queue.shift();
-      if (!chunk) return;
-      try {
-        const payload = await fetchChunkPayload(chunk.file, state.dataBaseUrl);
-        const incoming = preprocessJobs(payload.jobs || []);
-        if (incoming.length) {
-          state.jobs.push(...incoming);
-        }
-      } catch (_err) {
-        // Skip failed chunk and continue remaining chunks.
+  if (rest.length) {
+    Promise.all(rest.map((name) => tryFetchJson(new URL(`chunks/${name}`, base).toString()).catch(() => []))).then((restData) => {
+      const merged = state.allJobs.concat(restData.flat().map(normalizeJob));
+      const dedup = new Map();
+      for (const job of merged) {
+        const key = `${job.company || ""}@@${job.job_id || job.detail_url || ""}`;
+        dedup.set(key, job);
       }
-      loaded += 1;
-      if (loaded % renderStep === 0 || loaded === restChunks.length) {
-        refreshDuringChunkLoading();
-      }
-      if (loaded % 2 === 0 || loaded === restChunks.length) {
-        setLoadState(`后台加载剩余分片 ${loaded}/${restChunks.length}`);
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: Math.max(1, concurrency) }, () => worker()));
-  refreshFromCurrentData();
-  setLoadState(`完成(全量分片 ${state.jobs.length} 条)`);
-  if (state.isMobile) {
-    writePayloadCache({ jobs: state.jobs, meta: indexPayload.meta || {} }, state.dataBaseUrl);
+      state.allJobs = [...dedup.values()];
+      refreshFilterOptions();
+      applyFilters();
+      setLoadState("完成", `已加载全部分片，共 ${state.allJobs.length} 条岗位。`);
+    });
+  } else {
+    setLoadState("完成", `分片加载完成，共 ${state.allJobs.length} 条岗位。`);
   }
 }
 
-async function init() {
-  await bindInviteGate();
-  bindEvents();
+async function loadWithFallback(base, reason = "") {
+  const jobs = await tryFetchJson(new URL("jobs.json", base).toString());
+  state.allJobs = Array.isArray(jobs) ? jobs.map(normalizeJob) : [];
+  state.useFallback = true;
+  els.updatedAtText.textContent = "兼容模式";
+  setLoadState("兼容模式", `已切换 jobs.json 回退加载。${reason}`.trim());
+}
 
-  if (state.isMobile) {
-    const cache = readPayloadCache();
-    if (cache) {
-      renderPayload(cache, "缓存命中");
-      queueMicrotask(async () => {
-        try {
-          await bootstrapChunkedLoad();
-        } catch (_err) {
-          // Keep cached result if refresh fails.
-        }
-      });
-      return;
-    }
-  }
-
+async function initDataFlow() {
   try {
-    await bootstrapChunkedLoad();
-    return;
-  } catch (err) {
-    showChunkOnlyError();
-    console.error(err);
+    state.dataRoot = await locateDataRoot();
+    setLoadState("加载中", "正在加载岗位数据...");
+
+    try {
+      await loadWithIndex(state.dataRoot);
+    } catch (indexError) {
+      await loadWithFallback(state.dataRoot, "index/chunks 不可用。");
+      console.warn("index/chunks load failed:", indexError);
+    }
+
+    refreshFilterOptions();
+    applyFilters();
+
+    if (!state.useFallback && state.loadState !== "完成") {
+      setLoadState("完成", `加载完成，共 ${state.allJobs.length} 条岗位。`);
+    }
+  } catch (error) {
+    setLoadState("失败", "数据加载失败，请检查 web/data 目录是否可访问。");
+    updateStatusText(String(error.message || error));
+    console.error(error);
   }
 }
 
-init();
+function start() {
+  bindEvents();
+  setupInviteGate(async () => {
+    await initDataFlow();
+  });
+}
+
+start();

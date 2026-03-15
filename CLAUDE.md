@@ -14,13 +14,11 @@
 
 2. 数据分析层
 - 职责：对统一岗位数据做统计分析、NLP/ML 分析、求职指导分析，并导出机器可消费结果。
-- 目录：src/analysis_api.py, src/run_analysis.py, notebooks/jobs_analysis.ipynb。
-- 输出：data/analysis/*。
+
 
 3. 前端展示层
 - 职责：招聘信息卡片化展示、联动筛选、关键词搜索、渐进加载。
-- 目录：web/index.html, web/assets/*, web/data/*。
-- 输入：web/data/jobs.index.json + web/data/chunks/*.json（主），web/data/jobs.json（兜底兼容）。
+
 
 ## 2. 数据爬取模块实现总结
 
@@ -96,58 +94,29 @@
 
 ### 3.1 分析接口
 
-核心入口：src/analysis_api.py 的 get_analysis_payload。
-
-当前分析能力：
-- overview：分布统计。
-- quality：缺失率、重复率、文本长度。
-- skills：关键词命中、技术词频。
-- advanced_ml_nlp：TF-IDF + KMeans + NMF + SVD 二维语义。
-- career_guidance：赛道需求、实习切入、城市机会、行动建议。
-
-导出入口：
-- src/run_analysis.py。
-- 输出到 data/analysis。
 
 ### 3.2 新数据分析项目如何接入
 
 新增一个分析主题时，建议遵循：
+、
 
-1. 在 analysis_api.py 新增独立函数
-- 输入：jobs list[dict]。
-- 输出：可 JSON 序列化对象（dict/list/str/number）。
-- 不耦合 notebook 逻辑。
-
-2. 接入 build_analysis_report
-- 通过新增顶层键接入，如 report["salary_insight"]。
-
-3. 接入导出
-- 在 export_analysis_artifacts 增加对应 CSV/JSON 导出。
-
-4. Notebook 展示
-- 在 notebooks/jobs_analysis.ipynb 新增图表和解释单元。
-
-5. 文档更新
-- 在 docs/JOB_MARKET_ANALYSIS.md 增加口径与解读方法。
 
 ### 3.3 分析模块扩展方向
 
-- 岗位趋势（按日期/周）。
-- 公司-岗位-城市三维机会矩阵。
-- 关键词共现网络。
-- 投递优先级评分模型（可解释规则优先）。
+
 
 ## 4. 前端模块实现总结
 
+
 ### 4.1 当前前端能力
 
-- 卡片化岗位展示。
+- 卡片化岗位展示（移动端/桌面端自适应）。
 - 联动筛选（公司/项目/类别/城市）。
 - 岗位标题搜索。
-- 职责/要求/加分项关键词搜索。
+- 职责/要求/加分项关键词搜索（本地 textBlobLower 计算，无 search_blob 冗余字段）。
 - 默认关键词 chips。
-- 性能优化：防抖、预计算搜索字段、分页加载更多。
-- 渐进数据加载：jobs.index.json + full chunks（每片为完整岗位字段）。
+- 性能优化：防抖、预计算搜索字段、分页加载更多、移动端跳过桌面截断预览字段预计算。
+
 
 ### 4.2 前端如何调用接口/数据
 
@@ -158,33 +127,11 @@
 - 根据 chunks 清单逐片拉取 web/data/chunks/jobs-*.json。
 - 首屏优先渲染前 N 个分片，后续后台补齐剩余分片。
 
-2. 兼容路径
-- 仅在 index/chunks 不可用时回退 web/data/jobs.json。
 
-3. 数据目录探测
-- 前端会优先根据 assets/app.js 的脚本路径反推 ../data/。
-- 若部署路径不固定，再依次尝试 data、./data、/data、web/data、./web/data、/web/data。
-- 结论：app.js 放在 web/assets/ 是允许的，关键是 web/data/jobs.index.json 与 web/data/jobs.json 必须真实存在且可访问。
-
-3. 部署前数据生成
-- 运行 python src/export_frontend_jobs.py。
-
-4. 本地调试红线
-- 不要直接双击 web/index.html 用 file:// 打开页面；浏览器通常会拦截 fetch 本地 JSON。
-- 必须从 web 目录启动静态服务器，再访问 http://localhost:<port>。
-- 如果新增了邀请码校验后页面看似“无法加载数据”，先检查是否缺失 web/data/jobs.index.json / web/data/jobs.json，而不是先怀疑邀请码逻辑。
 
 ### 4.3 前端扩展规则
 
-- 新筛选项必须接入联动机制。
-- 重计算逻辑尽量复用现有函数，避免多处口径不一致。
-- 保持移动端可用（<940px 布局）。
-- 邀请码/遮罩改动不得阻塞 init() 后续数据加载 Promise；验证成功后必须保证遮罩消失并继续执行数据初始化。
-- 修改前端加载逻辑时，必须同时验证三种场景：
-  1. jobs.index.json + chunks 正常存在
-  2. index/chunks 不可用时 jobs.json 可回退
-  3. 本地 http.server 启动后可正常访问
- - GitHub Pages 部署红线：不得在移动端首屏阶段强制请求完整 jobs.json，大包仅可作为兜底路径。
+
 
 ## 5. 新需求管理与交付流程
 
@@ -229,10 +176,7 @@
 
 ### 6.2 公网发布（GitHub Pages）
 
-- 工作流：.github/workflows/deploy-pages.yml。
-- main 分支推送后自动：
-  1. 执行数据导出。
-  2. 发布 web 目录。
+
 
 ### 6.3 发布前检查
 

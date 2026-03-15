@@ -403,20 +403,50 @@ async function loadWithIndex(base) {
   setLoadState("加载中", `首批分片已加载 (${state.allJobs.length} 条)，正在补齐剩余数据...`);
 
   if (rest.length) {
-    Promise.all(rest.map((name) => tryFetchJson(new URL(`chunks/${name}`, base).toString()).catch(() => []))).then((restData) => {
-      const merged = state.allJobs.concat(restData.flat().map(normalizeJob));
-      const dedup = new Map();
-      for (const job of merged) {
-        const key = `${job.company || ""}@@${job.job_id || job.detail_url || ""}`;
-        dedup.set(key, job);
-      }
-      state.allJobs = [...dedup.values()];
-      refreshFilterOptions();
-      applyFilters();
-      setLoadState("完成", `已加载全部分片，共 ${state.allJobs.length} 条岗位。`);
-    });
+    loadRestChunksBatched(base, rest);
   } else {
     setLoadState("完成", `分片加载完成，共 ${state.allJobs.length} 条岗位。`);
+  }
+}
+
+// Load remaining chunks in small batches to respect mobile browser concurrency limits.
+// Each batch is awaited before the next starts, so at most BATCH_SIZE requests run in parallel.
+async function loadRestChunksBatched(base, files) {
+  const BATCH_SIZE = 4;
+  let failedCount = 0;
+
+  for (let i = 0; i < files.length; i += BATCH_SIZE) {
+    const batch = files.slice(i, i + BATCH_SIZE);
+    const results = await Promise.all(
+      batch.map((name) =>
+        tryFetchJson(new URL(`chunks/${name}`, base).toString()).catch(() => {
+          failedCount++;
+          return [];
+        })
+      )
+    );
+
+    const newJobs = results.flat().map(normalizeJob);
+    if (!newJobs.length) continue;
+
+    const dedup = new Map();
+    for (const job of state.allJobs.concat(newJobs)) {
+      const key = `${job.company || ""}@@${job.job_id || job.detail_url || ""}`;
+      dedup.set(key, job);
+    }
+    state.allJobs = [...dedup.values()];
+    refreshFilterOptions();
+    applyFilters();
+    setLoadState(
+      "加载中",
+      `正在补齐数据... 已加载 ${state.allJobs.length} 条（${i + batch.length}/${files.length} 批次完成）`
+    );
+  }
+
+  if (failedCount > 0) {
+    setLoadState("完成", `加载完成，共 ${state.allJobs.length} 条岗位（${failedCount} 个分片加载失败已跳过）。`);
+  } else {
+    setLoadState("完成", `已加载全部分片，共 ${state.allJobs.length} 条岗位。`);
   }
 }
 

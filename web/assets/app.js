@@ -3,7 +3,7 @@ const state = {
   filteredJobs: [],
   visibleCount: 0,
   pageSize: 30,
-  chunkWarmCount: 3,
+  chunkWarmCount: 2,
   loadState: "准备中",
   dataRoot: "",
   useFallback: false,
@@ -181,6 +181,16 @@ function updateLoadMoreButton() {
   const hasMore = state.visibleCount < state.filteredJobs.length;
   els.loadMoreBtn.disabled = !hasMore;
   els.loadMoreBtn.textContent = hasMore ? "加载更多" : "已加载全部";
+}
+
+function mergeJobsIntoState(jobs) {
+  if (!jobs.length) return;
+  const dedup = new Map();
+  for (const job of state.allJobs.concat(jobs)) {
+    const key = `${job.company || ""}@@${job.job_id || job.detail_url || ""}`;
+    dedup.set(key, job);
+  }
+  state.allJobs = [...dedup.values()];
 }
 
 function renderList(reset = false) {
@@ -393,12 +403,17 @@ async function loadWithIndex(base) {
 
   const warm = files.slice(0, state.chunkWarmCount);
   const rest = files.slice(state.chunkWarmCount);
-  const warmData = await Promise.all(
-    warm.map((name) => tryFetchJson(new URL(`chunks/${name}`, base).toString()).catch(() => []))
-  );
-
-  state.allJobs = warmData.flat().map(normalizeJob);
+  state.allJobs = [];
   els.updatedAtText.textContent = index.generated_at || "-";
+
+  for (let i = 0; i < warm.length; i++) {
+    const name = warm[i];
+    const records = await tryFetchJson(new URL(`chunks/${name}`, base).toString()).catch(() => []);
+    mergeJobsIntoState(records.map(normalizeJob));
+    refreshFilterOptions();
+    applyFilters();
+    setLoadState("加载中", `首批分片加载中... ${i + 1}/${warm.length}（${state.allJobs.length} 条）`);
+  }
 
   setLoadState("加载中", `首批分片已加载 (${state.allJobs.length} 条)，正在补齐剩余数据...`);
 
@@ -412,7 +427,7 @@ async function loadWithIndex(base) {
 // Load remaining chunks in small batches to respect mobile browser concurrency limits.
 // Each batch is awaited before the next starts, so at most BATCH_SIZE requests run in parallel.
 async function loadRestChunksBatched(base, files) {
-  const BATCH_SIZE = 4;
+  const BATCH_SIZE = 2;
   let failedCount = 0;
 
   for (let i = 0; i < files.length; i += BATCH_SIZE) {
@@ -428,13 +443,7 @@ async function loadRestChunksBatched(base, files) {
 
     const newJobs = results.flat().map(normalizeJob);
     if (!newJobs.length) continue;
-
-    const dedup = new Map();
-    for (const job of state.allJobs.concat(newJobs)) {
-      const key = `${job.company || ""}@@${job.job_id || job.detail_url || ""}`;
-      dedup.set(key, job);
-    }
-    state.allJobs = [...dedup.values()];
+    mergeJobsIntoState(newJobs);
     refreshFilterOptions();
     applyFilters();
     setLoadState(
